@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <title>Bomberman Online - Zapia</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  
+  <!-- Firebase SDK Compat (Necessário para rodar direto no navegador) -->
+  <script src="https://www.gstatic.com/firebasejs/9.10.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.10.0/firebase-database-compat.js"></script>
+
+  <style>
+    * { box-sizing: border-box; touch-action: manipulation; user-select: none; -webkit-tap-highlight-color: transparent; }
+    body { margin: 0; background: #1a1a1a; color: white; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; overflow: hidden; }
+    
+    #lobby { position: absolute; inset: 0; background: rgba(0,0,0,0.9); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px; }
+    #lobby h1 { color: #ffeb3b; text-shadow: 2px 2px #f44336; margin-bottom: 30px; }
+    
+    #game-ui { width: 100%; max-width: 600px; padding: 10px; display: flex; justify-content: space-between; background: #333; border-bottom: 2px solid #555; }
+    #status { color: #4caf50; font-weight: bold; }
+
+    #canvas-container { position: relative; width: 100%; max-width: 600px; aspect-ratio: 15/13; }
+    canvas { width: 100%; height: auto; background: #2e7d32; border: 4px solid #fff; image-rendering: pixelated; }
+
+    .controls { width: 100%; max-width: 600px; padding: 20px; display: flex; justify-content: space-between; align-items: center; }
+    .dpad { display: grid; grid-template-columns: repeat(3, 60px); gap: 8px; }
+    .btn { width: 60px; height: 60px; background: #444; border: 3px solid #eee; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: white; }
+    .btn:active { background: #666; transform: scale(0.9); }
+    .btn-bomb { width: 90px; height: 90px; border-radius: 50%; background: #d32f2f; border: 4px solid #fff; font-weight: bold; }
+    
+    input { padding: 12px; margin: 8px; border-radius: 5px; border: none; width: 220px; font-size: 16px; text-align: center; }
+    button { padding: 15px 40px; background: #f44336; color: white; border: none; border-radius: 5px; font-size: 18px; font-weight: bold; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <div id="lobby">
+    <h1>BOMBERMAN ONLINE</h1>
+    <input type="text" id="p-name" placeholder="Nome do Jogador" maxlength="10">
+    <input type="text" id="r-id" placeholder="Nome da Sala (ex: sala1)">
+    <button id="start-btn">ENTRAR NA SALA</button>
+    <p style="font-size: 12px; color: #aaa; margin-top: 15px;">Mínimo 2 jogadores para iniciar.</p>
+  </div>
+
+  <div id="game-ui">
+    <div id="status">Aguardando...</div>
+    <div id="phase-info">Fase: Difícil</div>
+  </div>
+
+  <div id="canvas-container">
+    <canvas width="960" height="832" id="game"></canvas>
+  </div>
+
+  <div class="controls">
+    <div class="dpad">
+      <div style="grid-column: 2" class="btn" id="up">▲</div>
+      <div style="grid-column: 1; grid-row: 2" class="btn" id="left">◀</div>
+      <div style="grid-column: 3; grid-row: 2" class="btn" id="right">▶</div>
+      <div style="grid-column: 2; grid-row: 3" class="btn" id="down">▼</div>
+    </div>
+    <div class="btn btn-bomb" id="bomb-btn">BOMBA</div>
+  </div>
+
+  <script>
+    // --- CONFIGURAÇÃO FIREBASE DO USUÁRIO ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyAvDDcWaMa79_lPig78LCsHwdxqgMvf19I",
+      authDomain: "bomberman-cc1db.firebaseapp.com",
+      projectId: "bomberman-cc1db",
+      storageBucket: "bomberman-cc1db.firebasestorage.app",
+      messagingSenderId: "1029411431019",
+      appId: "1:1029411431019:web:d07987a9abd4f33144072e",
+      // ATENÇÃO: Verifique se a sua URL do Database é esta abaixo:
+      databaseURL: "https://bomberman-cc1db-default-rtdb.firebaseio.com"
+    };
+
+    // Inicialização do Firebase
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const grid = 64, rows = 13, cols = 15;
+    
+    let myId, myRoom, myName;
+    let players = {}, map = [], bombs = {}, explosions = [];
+    let isGameRunning = false;
+
+    // Cores para os jogadores
+    const colors = ['#2196f3', '#f44336', '#ffeb3b', '#9c27b0'];
+
+    document.getElementById('start-btn').onclick = async () => {
+      myName = document.getElementById('p-name').value || "Bomber";
+      myRoom = document.getElementById('r-id').value || "geral";
+      myId = Math.random().toString(36).substring(7);
+
+      document.getElementById('lobby').style.display = 'none';
+      const roomRef = db.ref('rooms/' + myRoom);
+
+      // 1. Verificar se precisa gerar o mapa (Primeiro a entrar gera)
+      const snap = await roomRef.once('value');
+      if (!snap.hasChild('map')) {
+        generateHardMap(roomRef);
+      }
+
+      // 2. Entrar na sala
+      const pCount = snap.child('players').numChildren();
+      const startPos = getStartPos(pCount);
+      
+      roomRef.child('players/' + myId).set({
+        name: myName, r: startPos.r, c: startPos.c, alive: true, color: colors[pCount % 4]
+      });
+      roomRef.child('players/' + myId).onDisconnect().remove();
+
+      // 3. Listeners em tempo real
+      roomRef.child('players').on('value', s => {
+        players = s.val() || {};
+        const total = Object.keys(players).length;
+        if (total >= 2) isGameRunning = true;
+        statusEl.innerText = total < 2 ? `Aguardando... (${total}/2)` : "BATALHA!";
+      });
+
+      roomRef.child('map').on('value', s => map = s.val() || []);
+      roomRef.child('bombs').on('value', s => bombs = s.val() || {});
+
+      requestAnimationFrame(gameLoop);
+    };
+
+    function generateHardMap(ref) {
+      let newMap = [];
+      for (let r = 0; r < rows; r++) {
+        newMap[r] = [];
+        for (let c = 0; c < cols; c++) {
+          if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1 || (r % 2 === 0 && c % 2 === 0)) {
+            newMap[r][c] = 'W'; // Muro indestrutível
+          } else if ((r < 2 && c < 2) || (r > rows - 3 && c > cols - 3) || (r < 2 && c > cols - 3) || (r > rows - 3 && c < 2)) {
+            newMap[r][c] = ' '; // Espaço limpo nos cantos
+          } else {
+            // DIFICULDADE ALTA: 85% de blocos
+            newMap[r][c] = Math.random() < 0.85 ? 'S' : ' ';
+          }
+        }
+      }
+      ref.child('map').set(newMap);
+    }
+
+    function getStartPos(index) {
+      const pos = [{r:1,c:1}, {r:11,c:13}, {r:1,c:13}, {r:11,c:1}];
+      return pos[index % 4];
+    }
+
+    function move(dr, dc) {
+      if (!isGameRunning) return;
+      const me = players[myId];
+      if (!me || !me.alive) return;
+      const nr = me.r + dr, nc = me.c + dc;
+      if (map[nr] && map[nr][nc] === ' ') {
+        db.ref(`rooms/\({myRoom}/players/\){myId}`).update({ r: nr, c: nc });
+      }
+    }
+
+    function placeBomb() {
+      if (!isGameRunning || !players[myId].alive) return;
+      const { r, c } = players[myId];
+      const bid = `bomb_\({r}_\){c}`;
+      if (!bombs[bid]) {
+        db.ref(`rooms/\({myRoom}/bombs/\){bid}`).set({ r, c, owner: myId, time: Date.now() });
+        setTimeout(() => triggerExplosion(r, c, bid), 2500);
+      }
+    }
+
+    function triggerExplosion(r, c, bid) {
+      db.ref(`rooms/\({myRoom}/bombs/\){bid}`).remove();
+      const area = [{r:0,c:0},{r:1,c:0},{r:-1,c:0},{r:0,c:1},{r:0,c:-1}];
+      
+      area.forEach(d => {
+        const nr = r + d.r, nc = c + d.c;
+        if (map[nr] && map[nr][nc] === 'S') {
+          db.ref(`rooms/\({myRoom}/map/\){nr}/${nc}`).set(' ');
+        }
+        // Verificar se acertou alguém
+        Object.keys(players).forEach(pid => {
+          if (players[pid].r === nr && players[pid].c === nc) {
+            db.ref(`rooms/\({myRoom}/players/\){pid}`).update({ alive: false });
+          }
+        });
+        explosions.push({r: nr, c: nc, t: 10});
+      });
+    }
+
+    function gameLoop() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Desenhar Mapa
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (map[r][c] === 'W') { ctx.fillStyle = '#555'; ctx.fillRect(c*grid, r*grid, grid, grid); }
+          else if (map[r][c] === 'S') { ctx.fillStyle = '#8b4513'; ctx.fillRect(c*grid+2, r*grid+2, grid-4, grid-4); }
+        }
+      }
+
+      // Desenhar Bombas
+      Object.values(bombs).forEach(b => {
+        ctx.fillStyle = '#000'; ctx.beginPath();
+        ctx.arc((b.c+0.5)*grid, (b.r+0.5)*grid, grid*0.4, 0, Math.PI*2); ctx.fill();
+      });
+
+      // Desenhar Explosões
+      explosions = explosions.filter(e => {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.fillRect(e.c*grid, e.r*grid, grid, grid);
+        e.t--; return e.t > 0;
+      });
+
+      // Desenhar Jogadores
+      Object.keys(players).forEach(id => {
+        const p = players[id];
+        if (!p.alive) return;
+        ctx.fillStyle = p.color; ctx.beginPath();
+        ctx.arc((p.c+0.5)*grid, (p.r+0.5)*grid, grid*0.35, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#fff'; ctx.font = "bold 14px Arial"; ctx.textAlign = "center";
+        ctx.fillText(p.name, (p.c+0.5)*grid, (p.r)*grid - 5);
+      });
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    // Eventos de Controle
+    const setupBtn = (id, f) => {
+      const el = document.getElementById(id);
+      el.addEventListener('touchstart', e => { e.preventDefault(); f(); });
+      el.addEventListener('mousedown', f);
+    };
+
+    setupBtn('up', () => move(-1, 0));
+    setupBtn('down', () => move(1, 0));
+    setupBtn('left', () => move(0, -1));
+    setupBtn('right', () => move(0, 1));
+    setupBtn('bomb-btn', placeBomb);
+
+  </script>
+</body>
+</html>
