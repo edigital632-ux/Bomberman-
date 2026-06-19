@@ -37,9 +37,9 @@
     #ranking-box { margin-top: 25px; background: #222; border: 2px dashed #ffeb3b; padding: 15px; width: 280px; border-radius: 5px; text-align: left; }
     #ranking-box h3 { margin: 0 0 10px 0; text-align: center; color: #ffeb3b; font-size: 16px; letter-spacing: 1px; }
     .ranking-item { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 4px; }
-    .ranking-item:nth-child(2) { color: #ffd700; } /* Ouro */
-    .ranking-item:nth-child(3) { color: #c0c0c0; } /* Prata */
-    .ranking-item:nth-child(4) { color: #cd7f32; } /* Bronze */
+    .ranking-item:nth-child(2) { color: #ffd700; } 
+    .ranking-item:nth-child(3) { color: #c0c0c0; } 
+    .ranking-item:nth-child(4) { color: #cd7f32; } 
   </style>
 </head>
 <body>
@@ -141,13 +141,14 @@
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
 
-    // Listener em Tempo Real para preencher o Ranking Global na Tela Inicial
-    db.ref('leaderboard').orderByValue().limitToLast(5).on('value', snap => {
+    // Listener corrigido para atualização contínua em tempo real
+    db.ref('leaderboard').on('value', snap => {
       const listEl = document.getElementById('ranking-list');
       const data = snap.val() || {};
       
-      // Converte em array e ordena do maior para o menor
-      const sorted = Object.entries(data).sort((a, b) => b[1] - a[1]);
+      const sorted = Object.entries(data)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5); // Pega apenas o Top 5
       
       if (sorted.length === 0) {
         listEl.innerHTML = '<div style="text-align:center;color:#777;">Nenhuma vitória ainda</div>';
@@ -182,7 +183,7 @@
     }
 
     joinBtn.onclick = async () => {
-      const nameVal = document.getElementById('p-name').value.trim();
+      const nameInput = document.getElementById('p-name').value.trim();
       const roomVal = document.getElementById('r-id').value.trim();
 
       if (!roomVal) { lobbyError.innerText = 'Digite um ID da sala.'; return; }
@@ -190,7 +191,7 @@
       joinBtn.disabled = true;
       lobbyError.innerText = '';
 
-      myName = nameVal || 'Bomber';
+      myName = nameInput || 'Bomber_' + Math.floor(Math.random() * 900 + 100);
       myRoom = roomVal;
       myId = 'p_' + Math.random().toString(36).substring(2, 9);
 
@@ -364,13 +365,15 @@
         if (aliveCount === 1) {
           const winnerId = ids.find(pid => players[pid].alive);
           roundWinnerName = players[winnerId].name;
+          
           if (winnerId === myId) {
-            // Atualiza pontos locais na sala
             const myCurrentPoints = players[myId].points || 0;
             db.ref(`rooms/${myRoom}/players/${myId}`).update({ points: myCurrentPoints + 1 });
             
-            // ATUALIZAÇÃO DO RANKING GLOBAL (Soma +1 vitória permanente para o Nome)
-            db.ref(`leaderboard/${myName}`).transaction(currentWins => (currentWins || 0) + 1);
+            // Gravação do ranking reestruturada para prevenir falhas assíncronas
+            db.ref(`leaderboard/${myName}`).transaction((currentWins) => {
+              return (currentWins || 0) + 1;
+            });
           }
         }
         showPhaseBanner(aliveCount === 1 ? `${roundWinnerName} venceu a rodada! Próxima fase...` : 'Empate! Próxima fase...');
