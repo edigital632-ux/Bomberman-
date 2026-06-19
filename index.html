@@ -94,15 +94,14 @@
     const EXPLOSION_VISIBLE_MS = 600;
     const RESPAWN_DELAY_MS = 3000;
     const BASE_BOMB_RANGE = 2; 
-    const POWERUP_SPAWN_CHANCE = 0.35; 
+    const POWERUP_SPAWN_CHANCE = 0.45; // Chance aumentada para 45%
 
-    // NOVO: Sincronização do Relógio Global do Servidor
+    // Sincronização do Relógio Global do Servidor
     let serverTimeOffset = 0;
     db.ref('.info/serverTimeOffset').on('value', snap => {
       serverTimeOffset = snap.val() || 0;
     });
 
-    // Função que garante que todos os jogadores estejam no mesmo milissegundo exato
     function getServerTime() {
       return Date.now() + serverTimeOffset;
     }
@@ -117,6 +116,7 @@
     let processedBombIds = new Set();
     let localExplodedBombs = new Set(); 
     let myRespawnScheduled = false;
+    let powerupAlternator = 'range'; // Força alternância entre os itens
 
     const SPAWNS = [
       { r: 1, c: 1 },              
@@ -187,7 +187,7 @@
         const myPlayerRef = roomRef.child('players/' + myId);
         await myPlayerRef.set({
           name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, 
-          bombRange: BASE_BOMB_RANGE, maxBombs: 1, points: 0 // Iniciando maxBombs
+          bombRange: BASE_BOMB_RANGE, maxBombs: 1, points: 0
         });
         myPlayerRef.onDisconnect().remove();
 
@@ -305,11 +305,18 @@
       const nextPhase = currentPhase + 1;
       generateHardMap(roomRef, nextPhase);
 
-      ids.forEach(pid => {
-        const slot = (players[pid] && typeof players[pid].slot === 'number') ? players[pid].slot : 0;
-        const spawn = SPAWNS[slot % 4];
-        // Reseta o poder da bomba e a quantidade para a nova fase
-        roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true, bombRange: BASE_BOMB_RANGE, maxBombs: 1 });
+      // EMBARALHA AS POSIÇÕES PARA NUNCA NASCER NO MESMO LUGAR
+      const shuffledSpawns = [...SPAWNS].sort(() => Math.random() - 0.5);
+
+      ids.forEach((pid, index) => {
+        const spawn = shuffledSpawns[index % 4];
+        roomRef.child('players/' + pid).update({ 
+            r: spawn.r, 
+            c: spawn.c, 
+            alive: true, 
+            bombRange: BASE_BOMB_RANGE, 
+            maxBombs: 1 
+        });
       });
     }
 
@@ -351,7 +358,6 @@
 
       db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
 
-      // LÓGICA DE COLETA DOS NOVOS ITENS
       const pid = `pu_${nr}_${nc}`;
       const pu = powerups[pid];
       if (pu) {
@@ -374,8 +380,12 @@
       const { r, c } = me;
       const bid = `b_${myId}_${Date.now()}`;
       
-      const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId);
-      const myMaxBombs = me.maxBombs || 1; // Verifica o limite de bombas do jogador
+      // Bloqueia colocar bomba exatamente no mesmo lugar de outra
+      if (isBombAt(r, c)) return; 
+
+      // Só conta as bombas ativas, ignorando as que já explodiram
+      const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking');
+      const myMaxBombs = me.maxBombs || 1; 
 
       if (myActiveBombs.length >= myMaxBombs) return;
 
@@ -385,7 +395,7 @@
     }
 
     function tickBombs() {
-      const serverNow = getServerTime(); // Usando o relógio sincronizado do servidor
+      const serverNow = getServerTime(); 
       const me = players[myId];
       if (!me) return;
 
@@ -396,7 +406,6 @@
         const responsible = players[b.owner] ? b.owner : ids[0];
         const iAmResponsible = (responsible === myId);
 
-        // A bomba calcula o tempo baseado unicamente no relógio global
         if (b.state === 'ticking' && serverNow - b.plantedAt >= BOMB_FUSE_MS) {
           if (iAmResponsible && !processedBombIds.has(bid)) {
             processedBombIds.add(bid);
@@ -442,12 +451,12 @@
          explodedAt: firebase.database.ServerValue.TIMESTAMP
       });
 
-      // LÓGICA DE GERAR 2 TIPOS DE ITENS DIFERENTES ALEATORIAMENTE
+      // GARANTE QUE O ITEM ALTERNE ENTRE FOGO E BOMBA
       blocksToDestroy.forEach(block => {
         db.ref(`rooms/${myRoom}/map/${block.r}/${block.c}`).set(' ');
         if (Math.random() < POWERUP_SPAWN_CHANCE) {
-          const pType = Math.random() < 0.5 ? 'range' : 'amount'; // 50% de chance para cada tipo de item
-          db.ref(`rooms/${myRoom}/powerups/pu_${block.r}_${block.c}`).set({ r: block.r, c: block.c, type: pType });
+          powerupAlternator = powerupAlternator === 'range' ? 'amount' : 'range';
+          db.ref(`rooms/${myRoom}/powerups/pu_${block.r}_${block.c}`).set({ r: block.r, c: block.c, type: powerupAlternator });
         }
       });
     }
@@ -473,9 +482,8 @@
 
       const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
       
-      // DESENHO DOS ITENS NO MAPA
       Object.values(powerups).forEach(p => {
-        ctx.fillStyle = p.type === 'amount' ? '#29b6f6' : '#ffca28'; // Azul para bomba, Amarelo para fogo
+        ctx.fillStyle = p.type === 'amount' ? '#29b6f6' : '#ffca28'; 
         ctx.beginPath();
         ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.28 * pulse, 0, Math.PI * 2);
         ctx.fill();
@@ -486,7 +494,7 @@
         ctx.textAlign = 'left';
       });
 
-      const serverNow = getServerTime(); // Relógio sincronizado para os visuais da bomba também
+      const serverNow = getServerTime(); 
       
       Object.entries(bombs).forEach(([bid, b]) => {
         if (b.state === 'exploding' && b.hitCells) {
