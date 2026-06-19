@@ -13,7 +13,7 @@
     body { margin: 0; background: #1a1a1a; color: white; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; }
     #lobby { position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px; overflow-y: auto; }
     #canvas-container { position: relative; width: 100%; max-width: 600px; aspect-ratio: 15/13; }
-    canvas { width: 100%; height: auto; background: #2e7d32; border: 4px solid #fff; image-rendering: pixelated; display: block; }
+    canvas { width: 100%; height: auto; background: #2e7d32; border: 4px solid #fff; image-rendering: pixelated; display: block; transition: background 1s ease; }
     .controls { width: 100%; max-width: 600px; padding: 20px; display: flex; justify-content: space-between; align-items: center; }
     .dpad { display: grid; grid-template-columns: repeat(3, 60px); gap: 5px; }
     .btn { width: 60px; height: 60px; background: #444; border: 2px solid #fff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: white; cursor: pointer; }
@@ -33,7 +33,6 @@
     #event-log { font-size: 12px; color: #80d8ff; min-height: 18px; margin-top: 2px; transition: opacity 0.3s; }
     #phase-banner { font-size: 14px; color: #fff176; min-height: 18px; margin-top: 2px; }
 
-    /* Estilos do Novo Ranking */
     #ranking-box { margin-top: 25px; background: #222; border: 2px dashed #ffeb3b; padding: 15px; width: 320px; border-radius: 5px; text-align: left; }
     #ranking-box h3 { margin: 0 0 10px 0; text-align: center; color: #ffeb3b; font-size: 16px; letter-spacing: 1px; }
     .ranking-item { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 6px; padding: 4px; border-bottom: 1px solid #333;}
@@ -41,7 +40,7 @@
     .ranking-item:nth-child(3) { color: #c0c0c0; } 
     .ranking-item:nth-child(4) { color: #cd7f32; } 
     
-    /* Destaque para o Campeão (10 vitórias ou mais) */
+    /* Destaque para o Campeão (5 vitórias ou mais) */
     .champion { color: #00e676 !important; font-weight: bold; text-shadow: 0 0 5px rgba(0, 230, 118, 0.5); background: rgba(0, 230, 118, 0.1); border-radius: 4px; border-bottom: none; }
   </style>
 </head>
@@ -140,11 +139,20 @@
       { r: rows - 2, c: 1 }         
     ];
     const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50']; 
+    
+    // Paletas de cores das fases
+    const PHASE_VISUALS = [
+      { bg: '#2e7d32', wall: '#444444', block: '#8b4513' }, // 1: Floresta (Verde)
+      { bg: '#01579b', wall: '#0d47a1', block: '#4fc3f7' }, // 2: Gelo (Azul)
+      { bg: '#b71c1c', wall: '#212121', block: '#ff9800' }, // 3: Fogo (Vermelho)
+      { bg: '#4a148c', wall: '#1a237e', block: '#e040fb' }, // 4: Sombrio (Roxo)
+      { bg: '#e65100', wall: '#3e2723', block: '#ffb300' }  // 5: Deserto (Laranja)
+    ];
 
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
 
-    // LISTENER DO RANKING COM REGRA DOS 10 PONTOS
+    // LISTENER DO RANKING - CORRIGIDO PARA 5 VITÓRIAS
     db.ref('leaderboard').on('value', snap => {
       const listEl = document.getElementById('ranking-list');
       const data = snap.val() || {};
@@ -159,10 +167,9 @@
       }
 
       listEl.innerHTML = sorted.map(([name, score], idx) => {
-        const isChampion = score >= 10;
+        const isChampion = score >= 5; // Apenas 5 vitórias para brilhar
         let displayName = `${idx + 1}. ${name}`;
         
-        // Se bateu 10 vitórias, adiciona o título
         if (isChampion) {
             displayName = `👑 ${name} (CAMPEÃO)`;
         }
@@ -324,8 +331,12 @@
       knownPlayerIds = newIds;
     }
 
+    // AUMENTO PROGRESSIVO DA QUANTIDADE DE BLOCOS POR FASE
     function generateHardMap(ref, phaseNum) {
       let newMap = [];
+      // A chance começa em 65% na fase 1 e aumenta até no máximo 95%
+      const blockChance = Math.min(0.60 + (phaseNum * 0.05), 0.95);
+
       for (let r = 0; r < rows; r++) {
         newMap[r] = [];
         for (let c = 0; c < cols; c++) {
@@ -334,7 +345,7 @@
           } else if ((r < 4 && c < 4) || (r > rows - 5 && c > cols - 5) || (r < 4 && c > cols - 5) || (r > rows - 5 && c < 4)) {
             newMap[r][c] = ' ';
           } else {
-            newMap[r][c] = Math.random() < 0.85 ? 'S' : ' ';
+            newMap[r][c] = Math.random() < blockChance ? 'S' : ' ';
           }
         }
       }
@@ -383,10 +394,7 @@
             const myCurrentPoints = players[myId].points || 0;
             db.ref(`rooms/${myRoom}/players/${myId}`).update({ points: myCurrentPoints + 1 });
             
-            // CORREÇÃO: Limpamos caracteres inválidos do nome antes de salvar no Firebase
-            // Firebase não aceita chaves com: . # $ [ ]
             const safeName = myName.replace(/[\.\#\$\[\]]/g, "_");
-            
             db.ref(`leaderboard/${safeName}`).transaction((currentWins) => {
               return (currentWins || 0) + 1;
             });
@@ -421,6 +429,7 @@
           db.ref(`rooms/${myRoom}/players/${myId}`).update({ maxBombs: currentMax + 1 });
           showEventMessage('+1 Bomba Extra! 💣');
         } else {
+          // LÓGICA DE ALCANCE: Quanto mais pega, maior o range da explosão de forma infinita
           const currentRange = me.bombRange || BASE_BOMB_RANGE;
           db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
           showEventMessage('Poder de fogo aumentado! 🔥');
@@ -525,10 +534,20 @@
     function loop() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
+      // APLICAÇÃO DINÂMICA DA PALETA DE CORES DA FASE
+      const visual = PHASE_VISUALS[(currentPhase - 1) % PHASE_VISUALS.length];
+      canvas.style.backgroundColor = visual.bg;
+
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          if (map[r] && map[r][c] === 'W') { ctx.fillStyle = '#444'; ctx.fillRect(c * grid, r * grid, grid, grid); }
-          else if (map[r] && map[r][c] === 'S') { ctx.fillStyle = '#8b4513'; ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); }
+          if (map[r] && map[r][c] === 'W') { 
+              ctx.fillStyle = visual.wall; 
+              ctx.fillRect(c * grid, r * grid, grid, grid); 
+          }
+          else if (map[r] && map[r][c] === 'S') { 
+              ctx.fillStyle = visual.block; 
+              ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); 
+          }
         }
       }
 
