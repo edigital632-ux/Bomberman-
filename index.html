@@ -83,7 +83,7 @@
     const EXPLOSION_VISIBLE_MS = 600;
     const RESPAWN_DELAY_MS = 3000;
     const BASE_BOMB_RANGE = 2; // alcance inicial da explosão (células em cada direção), igual para todos
-    const POWERUP_SPAWN_CHANCE = 0.18; // chance de cada bloco destrutível conter um power-up ao ser destruído
+    const POWERUP_SPAWN_CHANCE = 0.35; // chance de cada bloco destrutível conter um power-up ao ser destruído
 
     let myId, myRoom, myName, roomRef;
     let players = {}, map = [], bombs = {}, explosionEvents = {}, powerups = {};
@@ -297,21 +297,26 @@
       }
     }
 
+    function isBombAt(r, c) {
+      return Object.values(bombs).some(b => b.r === r && b.c === c);
+    }
+
     function move(dr, dc) {
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
       const nr = me.r + dr, nc = me.c + dc;
-      if (map[nr] && map[nr][nc] === ' ') {
-        db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
+      if (!map[nr] || map[nr][nc] !== ' ') return;
+      if (isBombAt(nr, nc)) return; // bomba bloqueia passagem, mesma regra pra todos
 
-        // Se há um power-up nessa célula, coleta: aumenta o alcance de explosão SÓ deste jogador
-        const pid = `pu_${nr}_${nc}`;
-        if (powerups[pid]) {
-          const currentRange = me.bombRange || BASE_BOMB_RANGE;
-          db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
-          db.ref(`rooms/${myRoom}/powerups/${pid}`).remove();
-          showEventMessage('Poder de explosão aumentado! 💥');
-        }
+      db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
+
+      // Se há um power-up nessa célula, coleta: aumenta o alcance de explosão SÓ deste jogador
+      const pid = `pu_${nr}_${nc}`;
+      if (powerups[pid]) {
+        const currentRange = me.bombRange || BASE_BOMB_RANGE;
+        db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
+        db.ref(`rooms/${myRoom}/powerups/${pid}`).remove();
+        showEventMessage('Poder de explosão aumentado! 💥');
       }
     }
 
@@ -337,7 +342,7 @@
         if (!b.plantedAt) return; // ainda não resolveu timestamp do servidor
         if (now - b.plantedAt >= BOMB_FUSE_MS && !processedBombIds.has(bid)) {
           processedBombIds.add(bid);
-          resolveExplosion(bid, b.r, b.c, b.range);
+          resolveExplosion(bid, b.r, b.c, b.range, b.owner);
         }
       });
     }
@@ -349,10 +354,17 @@
       });
     }
 
-    function resolveExplosion(bid, r, c, range) {
+    function resolveExplosion(bid, r, c, range, owner) {
       const bombRange = range || BASE_BOMB_RANGE;
       const directions = [{ dr: 0, dc: 0 }, { dr: 1, dc: 0 }, { dr: -1, dc: 0 }, { dr: 0, dc: 1 }, { dr: 0, dc: -1 }];
       const hitCells = [{ r, c }]; // o próprio centro sempre é atingido
+
+      // Só UM cliente fica responsável por destruir blocos e decidir power-ups dessa bomba,
+      // assim Math.random() não roda em duplicado em cada navegador com resultados diferentes.
+      // Se o dono da bomba ainda estiver conectado, ele decide; senão, quem tiver o menor id assume.
+      const ids = Object.keys(players).sort();
+      const responsible = players[owner] ? owner : ids[0];
+      const iAmResponsible = responsible === myId;
 
       directions.forEach(({ dr, dc }) => {
         if (dr === 0 && dc === 0) return; // centro já adicionado
@@ -364,10 +376,12 @@
           hitCells.push({ r: nr, c: nc });
 
           if (map[nr][nc] === 'S') {
-            db.ref(`rooms/${myRoom}/map/${nr}/${nc}`).set(' ');
-            // Chance de soltar um power-up de alcance no lugar do bloco destruído
-            if (Math.random() < POWERUP_SPAWN_CHANCE) {
-              db.ref(`rooms/${myRoom}/powerups/pu_${nr}_${nc}`).set({ r: nr, c: nc, type: 'range' });
+            if (iAmResponsible) {
+              db.ref(`rooms/${myRoom}/map/${nr}/${nc}`).set(' ');
+              // Chance de soltar um power-up de alcance no lugar do bloco destruído
+              if (Math.random() < POWERUP_SPAWN_CHANCE) {
+                db.ref(`rooms/${myRoom}/powerups/pu_${nr}_${nc}`).set({ r: nr, c: nc, type: 'range' });
+              }
             }
             break; // bloco destrutível absorve a explosão, não passa adiante
           }
