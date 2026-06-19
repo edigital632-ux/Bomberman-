@@ -25,6 +25,11 @@
     button#join-btn { padding: 15px 30px; background: #f44336; color: white; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; }
     button#join-btn:disabled { background: #777; cursor: default; }
     #status { padding: 10px; color: #ffeb3b; min-height: 24px; }
+    
+    /* Novo Placar */
+    #scoreboard { width: 100%; max-width: 600px; display: flex; justify-content: space-between; padding: 5px 15px; font-weight: bold; font-size: 18px; text-transform: uppercase; background: #222; border: 2px solid #555; margin-bottom: 5px; border-radius: 5px; }
+    .score-side { display: flex; align-items: center; }
+    
     #lobby-error { color: #ff5252; font-size: 13px; min-height: 18px; margin-top: 5px; }
     #room-share { font-size: 12px; color: #9ccc65; margin-top: 4px; }
     #event-log { font-size: 12px; color: #80d8ff; min-height: 18px; margin-top: 2px; transition: opacity 0.3s; }
@@ -43,6 +48,13 @@
   </div>
 
   <div id="status">Conecte-se para jogar</div>
+  
+  <!-- PLACAR LATERAL ADCIONADO -->
+  <div id="scoreboard">
+    <div id="score-p1" class="score-side"></div>
+    <div id="score-p2" class="score-side"></div>
+  </div>
+
   <div id="room-share"></div>
   <div id="phase-banner"></div>
   <div id="event-log"></div>
@@ -79,11 +91,13 @@
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     const grid = 64, rows = 13, cols = 15;
-    const BOMB_FUSE_MS = 1500;
+    
+    // EXPLOSÃO INSTANTÂNEA E RAIO MAIOR
+    const BOMB_FUSE_MS = 0; // Estoura no exato instante
     const EXPLOSION_VISIBLE_MS = 600;
     const RESPAWN_DELAY_MS = 3000;
-    const BASE_BOMB_RANGE = 2; // alcance inicial da explosão (células em cada direção), igual para todos
-    const POWERUP_SPAWN_CHANCE = 0.35; // chance de cada bloco destrutível conter um power-up ao ser destruído
+    const BASE_BOMB_RANGE = 8; // Alcance enorme de início para todos
+    const POWERUP_SPAWN_CHANCE = 0.35; 
 
     let myId, myRoom, myName, roomRef;
     let players = {}, map = [], bombs = {}, explosionEvents = {}, powerups = {};
@@ -94,20 +108,37 @@
     let eventLogTimeout = null;
     let processedBombIds = new Set();
     let myRespawnScheduled = false;
-    let localExplosions = []; // efeitos visuais locais com contagem decrescente
+    let localExplosions = []; 
 
-    // 4 cantos do mapa: cada slot tem posição E cor fixas e únicas.
-    // slot 0 = topo-esquerda | slot 1 = baixo-direita | slot 2 = topo-direita | slot 3 = baixo-esquerda
     const SPAWNS = [
-      { r: 1, c: 1 },              // slot 0: topo-esquerda
-      { r: rows - 2, c: cols - 2 }, // slot 1: baixo-direita
-      { r: 1, c: cols - 2 },        // slot 2: topo-direita
-      { r: rows - 2, c: 1 }         // slot 3: baixo-esquerda
+      { r: 1, c: 1 },              
+      { r: rows - 2, c: cols - 2 }, 
+      { r: 1, c: cols - 2 },        
+      { r: rows - 2, c: 1 }         
     ];
-    const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50']; // azul, laranja, roxo, verde — uma cor fixa por slot
+    const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50']; 
 
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
+
+    // Função que atualiza as pontuações na tela
+    function updateScoreboard() {
+      const pArr = Object.values(players).sort((a, b) => a.slot - b.slot);
+      const scoreP1 = document.getElementById('score-p1');
+      const scoreP2 = document.getElementById('score-p2');
+
+      if (pArr.length > 0) {
+        scoreP1.innerHTML = `<span style="color:${pArr[0].color}">${pArr[0].name}</span>&nbsp; ${pArr[0].points || 0}`;
+      } else {
+        scoreP1.innerHTML = '';
+      }
+
+      if (pArr.length > 1) {
+        scoreP2.innerHTML = `${pArr[1].points || 0} &nbsp;<span style="color:${pArr[1].color}">${pArr[1].name}</span>`;
+      } else {
+        scoreP2.innerHTML = '';
+      }
+    }
 
     joinBtn.onclick = async () => {
       const nameVal = document.getElementById('p-name').value.trim();
@@ -143,9 +174,6 @@
           generateHardMap(roomRef, 1);
         }
 
-        // Descobre quais slots (0-3) já estão ocupados por jogadores atualmente na sala,
-        // e escolhe o primeiro slot livre. Isso garante cor e posição únicas mesmo
-        // se alguém saiu e entrou antes, evitando repetir cor/spawn de outro jogador.
         const usedSlots = new Set(
           Object.values(existingPlayers)
             .map(p => p.slot)
@@ -153,14 +181,14 @@
         );
         let slot = 0;
         while (usedSlots.has(slot) && slot < SPAWNS.length) slot++;
-        if (slot >= SPAWNS.length) slot = existingCount % SPAWNS.length; // fallback de segurança
+        if (slot >= SPAWNS.length) slot = existingCount % SPAWNS.length; 
 
         const spawn = SPAWNS[slot];
         const color = COLORS[slot];
 
         const myPlayerRef = roomRef.child('players/' + myId);
         await myPlayerRef.set({
-          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, bombRange: BASE_BOMB_RANGE
+          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, bombRange: BASE_BOMB_RANGE, points: 0 // Inicia com 0 pontos
         });
         myPlayerRef.onDisconnect().remove();
 
@@ -168,6 +196,7 @@
           const newPlayers = s.val() || {};
           detectPlayerEvents(newPlayers);
           players = newPlayers;
+          updateScoreboard(); // Atualiza o placar a cada alteração
           const count = Object.keys(players).length;
           gameActive = count >= 2;
           if (count < 2) {
@@ -179,15 +208,26 @@
         });
 
         roomRef.child('map').on('value', s => { map = s.val() || []; });
+        
         roomRef.child('phase').on('value', s => {
           const p = s.val();
           if (p && p !== currentPhase) {
             currentPhase = p;
-            showPhaseBanner(`FASE ${currentPhase}`);
+            
+            // Lógica para descobrir quem está ganhando na troca de fase
+            let leaderName = "Empate";
+            let maxPoints = -1;
+            Object.values(players).forEach(pl => {
+                const pts = pl.points || 0;
+                if (pts > maxPoints) { maxPoints = pts; leaderName = pl.name; }
+                else if (pts === maxPoints) { leaderName = "Empate"; }
+            });
+            showPhaseBanner(`FASE ${currentPhase} - Ganhando: ${leaderName} 🏆`);
           } else if (p) {
             currentPhase = p;
           }
         });
+        
         roomRef.child('bombs').on('value', s => {
           const newBombs = s.val() || {};
           handleBombSync(newBombs);
@@ -203,7 +243,7 @@
         if (!loopStarted) {
           loopStarted = true;
           requestAnimationFrame(loop);
-          setInterval(tickBombs, 150);
+          setInterval(tickBombs, 50); // Tick ultra-rápido para garantir a explosão instantânea
         }
       } catch (err) {
         console.error(err);
@@ -265,8 +305,6 @@
       ref.child('powerups').remove();
     }
 
-    // Avança de fase: gera novo mapa e revive todo mundo nos spawns.
-    // Só o jogador com menor id entre os conectados executa, pra evitar corrida múltipla.
     function startNextPhase() {
       const ids = Object.keys(players).sort();
       if (ids[0] !== myId) return;
@@ -277,19 +315,34 @@
       ids.forEach(pid => {
         const slot = (players[pid] && typeof players[pid].slot === 'number') ? players[pid].slot : 0;
         const spawn = SPAWNS[slot % SPAWNS.length];
-        // Cada fase nova começa equilibrada: todos voltam ao alcance de explosão base
         roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true, bombRange: BASE_BOMB_RANGE });
       });
     }
 
-    // Quando só resta 1 (ou 0) jogador vivo entre os conectados, agenda a próxima fase.
     function checkRoundEnd() {
       const ids = Object.keys(players);
       if (ids.length < 2) return;
       const aliveCount = ids.filter(pid => players[pid].alive).length;
+      
       if (aliveCount <= 1 && !myRespawnScheduled) {
         myRespawnScheduled = true;
-        showPhaseBanner(aliveCount === 1 ? 'Vencedor da fase! Próxima fase em 3s...' : 'Empate! Próxima fase em 3s...');
+        
+        let roundWinnerName = null;
+        
+        // Verifica se alguém venceu a rodada para pontuar
+        if (aliveCount === 1) {
+          const winnerId = ids.find(pid => players[pid].alive);
+          roundWinnerName = players[winnerId].name;
+          
+          // Adiciona 1 ponto para o vencedor (ele mesmo garante a própria pontuação)
+          if (winnerId === myId) {
+            const myCurrentPoints = players[myId].points || 0;
+            db.ref(`rooms/${myRoom}/players/${myId}`).update({ points: myCurrentPoints + 1 });
+          }
+        }
+
+        showPhaseBanner(aliveCount === 1 ? `${roundWinnerName} venceu a rodada! Próxima fase...` : 'Empate! Próxima fase...');
+        
         setTimeout(() => {
           startNextPhase();
           myRespawnScheduled = false;
@@ -306,11 +359,10 @@
       if (!gameActive || !me || !me.alive) return;
       const nr = me.r + dr, nc = me.c + dc;
       if (!map[nr] || map[nr][nc] !== ' ') return;
-      if (isBombAt(nr, nc)) return; // bomba bloqueia passagem, mesma regra pra todos
+      if (isBombAt(nr, nc)) return; 
 
       db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
 
-      // Se há um power-up nessa célula, coleta: aumenta o alcance de explosão SÓ deste jogador
       const pid = `pu_${nr}_${nc}`;
       if (powerups[pid]) {
         const currentRange = me.bombRange || BASE_BOMB_RANGE;
@@ -325,7 +377,7 @@
       if (!gameActive || !me || !me.alive) return;
       const { r, c } = me;
       const bid = `b_${myId}_${Date.now()}`;
-      // Limite: 1 bomba viva por jogador por vez
+      
       const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId);
       if (myActiveBombs.length >= 1) return;
 
@@ -334,12 +386,10 @@
       });
     }
 
-    // Verifica periodicamente (client-side, qualquer jogador pode disparar)
-    // se alguma bomba já passou do tempo de explodir.
     function tickBombs() {
       const now = Date.now();
       Object.entries(bombs).forEach(([bid, b]) => {
-        if (!b.plantedAt) return; // ainda não resolveu timestamp do servidor
+        if (!b.plantedAt) return; 
         if (now - b.plantedAt >= BOMB_FUSE_MS && !processedBombIds.has(bid)) {
           processedBombIds.add(bid);
           resolveExplosion(bid, b.r, b.c, b.range, b.owner);
@@ -347,7 +397,6 @@
       });
     }
 
-    // Detecta bombas removidas/novas vindas do Firebase (sincroniza estado local)
     function handleBombSync(newBombs) {
       Object.keys(bombs).forEach(bid => {
         if (!newBombs[bid]) processedBombIds.delete(bid);
@@ -357,39 +406,33 @@
     function resolveExplosion(bid, r, c, range, owner) {
       const bombRange = range || BASE_BOMB_RANGE;
       const directions = [{ dr: 0, dc: 0 }, { dr: 1, dc: 0 }, { dr: -1, dc: 0 }, { dr: 0, dc: 1 }, { dr: 0, dc: -1 }];
-      const hitCells = [{ r, c }]; // o próprio centro sempre é atingido
+      const hitCells = [{ r, c }]; 
 
-      // Só UM cliente fica responsável por destruir blocos e decidir power-ups dessa bomba,
-      // assim Math.random() não roda em duplicado em cada navegador com resultados diferentes.
-      // Se o dono da bomba ainda estiver conectado, ele decide; senão, quem tiver o menor id assume.
       const ids = Object.keys(players).sort();
       const responsible = players[owner] ? owner : ids[0];
       const iAmResponsible = responsible === myId;
 
       directions.forEach(({ dr, dc }) => {
-        if (dr === 0 && dc === 0) return; // centro já adicionado
+        if (dr === 0 && dc === 0) return; 
         for (let step = 1; step <= bombRange; step++) {
           const nr = r + dr * step, nc = c + dc * step;
-          if (!map[nr] || map[nr][nc] === undefined) break; // fora do mapa
-          if (map[nr][nc] === 'W') break; // parede indestrutível bloqueia e para a explosão
+          if (!map[nr] || map[nr][nc] === undefined) break; 
+          if (map[nr][nc] === 'W') break; 
 
           hitCells.push({ r: nr, c: nc });
 
           if (map[nr][nc] === 'S') {
             if (iAmResponsible) {
               db.ref(`rooms/${myRoom}/map/${nr}/${nc}`).set(' ');
-              // Chance de soltar um power-up de alcance no lugar do bloco destruído
               if (Math.random() < POWERUP_SPAWN_CHANCE) {
                 db.ref(`rooms/${myRoom}/powerups/pu_${nr}_${nc}`).set({ r: nr, c: nc, type: 'range' });
               }
             }
-            break; // bloco destrutível absorve a explosão, não passa adiante
+            // Removido o 'break;' aqui para que a bomba destrua uma grande quantidade de blocos de uma vez!
           }
         }
       });
 
-      // Cada cliente checa se O PRÓPRIO jogador foi atingido e atualiza seu status.
-      // Evita que todo mundo escreva o status de todo mundo (menos conflito).
       const me = players[myId];
       if (me && me.alive) {
         const hit = hitCells.some(cell => cell.r === me.r && cell.c === me.c);
@@ -398,10 +441,8 @@
         }
       }
 
-      // Remove a bomba do Firebase (qualquer cliente que detectar primeiro remove)
       db.ref(`rooms/${myRoom}/bombs/${bid}`).remove().catch(() => {});
 
-      // Efeito visual local
       hitCells.forEach(cell => {
         localExplosions.push({ r: cell.r, c: cell.c, until: Date.now() + EXPLOSION_VISIBLE_MS });
       });
@@ -416,7 +457,6 @@
         }
       }
 
-      // Power-ups de alcance de explosão (desenhados como uma estrela laranja pulsante)
       const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
       Object.values(powerups).forEach(p => {
         ctx.fillStyle = '#ffca28';
@@ -430,18 +470,16 @@
         ctx.textAlign = 'left';
       });
 
-      // Bombas (com indicador de "quase explodindo")
       const now = Date.now();
       Object.values(bombs).forEach(b => {
         const elapsed = b.plantedAt ? now - b.plantedAt : 0;
-        const pulsing = elapsed > BOMB_FUSE_MS - 800;
+        const pulsing = elapsed > (BOMB_FUSE_MS > 800 ? BOMB_FUSE_MS - 800 : 0);
         ctx.fillStyle = pulsing ? '#ff5252' : '#000';
         ctx.beginPath();
         ctx.arc((b.c + 0.5) * grid, (b.r + 0.5) * grid, grid * 0.4, 0, Math.PI * 2);
         ctx.fill();
       });
 
-      // Explosões visuais
       localExplosions = localExplosions.filter(e => {
         if (now > e.until) return false;
         ctx.fillStyle = 'rgba(255, 140, 0, 0.75)';
