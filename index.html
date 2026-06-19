@@ -94,13 +94,15 @@
     let myRespawnScheduled = false;
     let localExplosions = []; // efeitos visuais locais com contagem decrescente
 
+    // 4 cantos do mapa: cada slot tem posição E cor fixas e únicas.
+    // slot 0 = topo-esquerda | slot 1 = baixo-direita | slot 2 = topo-direita | slot 3 = baixo-esquerda
     const SPAWNS = [
-      { r: 1, c: 1 },
-      { r: rows - 2, c: cols - 2 },
-      { r: 1, c: cols - 2 },
-      { r: rows - 2, c: 1 }
+      { r: 1, c: 1 },              // slot 0: topo-esquerda
+      { r: rows - 2, c: cols - 2 }, // slot 1: baixo-direita
+      { r: 1, c: cols - 2 },        // slot 2: topo-direita
+      { r: rows - 2, c: 1 }         // slot 3: baixo-esquerda
     ];
-    const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50'];
+    const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50']; // azul, laranja, roxo, verde — uma cor fixa por slot
 
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
@@ -139,7 +141,18 @@
           generateHardMap(roomRef, 1);
         }
 
-        const slot = existingCount % SPAWNS.length;
+        // Descobre quais slots (0-3) já estão ocupados por jogadores atualmente na sala,
+        // e escolhe o primeiro slot livre. Isso garante cor e posição únicas mesmo
+        // se alguém saiu e entrou antes, evitando repetir cor/spawn de outro jogador.
+        const usedSlots = new Set(
+          Object.values(existingPlayers)
+            .map(p => p.slot)
+            .filter(s => typeof s === 'number')
+        );
+        let slot = 0;
+        while (usedSlots.has(slot) && slot < SPAWNS.length) slot++;
+        if (slot >= SPAWNS.length) slot = existingCount % SPAWNS.length; // fallback de segurança
+
         const spawn = SPAWNS[slot];
         const color = COLORS[slot];
 
@@ -234,7 +247,7 @@
         for (let c = 0; c < cols; c++) {
           if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1 || (r % 2 === 0 && c % 2 === 0)) {
             newMap[r][c] = 'W';
-          } else if ((r < 3 && c < 3) || (r > rows - 4 && c > cols - 4) || (r < 3 && c > cols - 4) || (r > rows - 4 && c < 3)) {
+          } else if ((r < 4 && c < 4) || (r > rows - 5 && c > cols - 5) || (r < 4 && c > cols - 5) || (r > rows - 5 && c < 4)) {
             newMap[r][c] = ' ';
           } else {
             newMap[r][c] = Math.random() < 0.85 ? 'S' : ' ';
