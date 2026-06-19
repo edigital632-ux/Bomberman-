@@ -79,12 +79,14 @@
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     const grid = 64, rows = 13, cols = 15;
-    const BOMB_FUSE_MS = 2500;
+    const BOMB_FUSE_MS = 1500;
     const EXPLOSION_VISIBLE_MS = 600;
     const RESPAWN_DELAY_MS = 3000;
+    const BASE_BOMB_RANGE = 2; // alcance inicial da explosão (células em cada direção), igual para todos
+    const POWERUP_SPAWN_CHANCE = 0.18; // chance de cada bloco destrutível conter um power-up ao ser destruído
 
     let myId, myRoom, myName, roomRef;
-    let players = {}, map = [], bombs = {}, explosionEvents = {};
+    let players = {}, map = [], bombs = {}, explosionEvents = {}, powerups = {};
     let currentPhase = 1;
     let gameActive = false;
     let loopStarted = false;
@@ -158,7 +160,7 @@
 
         const myPlayerRef = roomRef.child('players/' + myId);
         await myPlayerRef.set({
-          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot
+          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, bombRange: BASE_BOMB_RANGE
         });
         myPlayerRef.onDisconnect().remove();
 
@@ -190,6 +192,9 @@
           const newBombs = s.val() || {};
           handleBombSync(newBombs);
           bombs = newBombs;
+        });
+        roomRef.child('powerups').on('value', s => {
+          powerups = s.val() || {};
         });
 
         document.getElementById('lobby').style.display = 'none';
@@ -257,6 +262,7 @@
       ref.child('map').set(newMap);
       ref.child('phase').set(phaseNum);
       ref.child('bombs').remove();
+      ref.child('powerups').remove();
     }
 
     // Avança de fase: gera novo mapa e revive todo mundo nos spawns.
@@ -271,7 +277,8 @@
       ids.forEach(pid => {
         const slot = (players[pid] && typeof players[pid].slot === 'number') ? players[pid].slot : 0;
         const spawn = SPAWNS[slot % SPAWNS.length];
-        roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true });
+        // Cada fase nova começa equilibrada: todos voltam ao alcance de explosão base
+        roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true, bombRange: BASE_BOMB_RANGE });
       });
     }
 
@@ -296,6 +303,15 @@
       const nr = me.r + dr, nc = me.c + dc;
       if (map[nr] && map[nr][nc] === ' ') {
         db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
+
+        // Se há um power-up nessa célula, coleta: aumenta o alcance de explosão SÓ deste jogador
+        const pid = `pu_${nr}_${nc}`;
+        if (powerups[pid]) {
+          const currentRange = me.bombRange || BASE_BOMB_RANGE;
+          db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
+          db.ref(`rooms/${myRoom}/powerups/${pid}`).remove();
+          showEventMessage('Poder de explosão aumentado! 💥');
+        }
       }
     }
 
@@ -309,7 +325,7 @@
       if (myActiveBombs.length >= 1) return;
 
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
-        r, c, owner: myId, plantedAt: firebase.database.ServerValue.TIMESTAMP
+        r, c, owner: myId, range: me.bombRange || BASE_BOMB_RANGE, plantedAt: firebase.database.ServerValue.TIMESTAMP
       });
     }
 
@@ -321,7 +337,7 @@
         if (!b.plantedAt) return; // ainda não resolveu timestamp do servidor
         if (now - b.plantedAt >= BOMB_FUSE_MS && !processedBombIds.has(bid)) {
           processedBombIds.add(bid);
-          resolveExplosion(bid, b.r, b.c);
+          resolveExplosion(bid, b.r, b.c, b.range);
         }
       });
     }
@@ -333,15 +349,28 @@
       });
     }
 
-    function resolveExplosion(bid, r, c) {
-      const area = [{ r: 0, c: 0 }, { r: 1, c: 0 }, { r: -1, c: 0 }, { r: 0, c: 1 }, { r: 0, c: -1 }];
-      const hitCells = [];
-      area.forEach(d => {
-        const nr = r + d.r, nc = c + d.c;
-        if (!map[nr] || map[nr][nc] === 'W') return; // parede bloqueia a explosão
-        hitCells.push({ r: nr, c: nc });
-        if (map[nr][nc] === 'S') {
-          db.ref(`rooms/${myRoom}/map/${nr}/${nc}`).set(' ');
+    function resolveExplosion(bid, r, c, range) {
+      const bombRange = range || BASE_BOMB_RANGE;
+      const directions = [{ dr: 0, dc: 0 }, { dr: 1, dc: 0 }, { dr: -1, dc: 0 }, { dr: 0, dc: 1 }, { dr: 0, dc: -1 }];
+      const hitCells = [{ r, c }]; // o próprio centro sempre é atingido
+
+      directions.forEach(({ dr, dc }) => {
+        if (dr === 0 && dc === 0) return; // centro já adicionado
+        for (let step = 1; step <= bombRange; step++) {
+          const nr = r + dr * step, nc = c + dc * step;
+          if (!map[nr] || map[nr][nc] === undefined) break; // fora do mapa
+          if (map[nr][nc] === 'W') break; // parede indestrutível bloqueia e para a explosão
+
+          hitCells.push({ r: nr, c: nc });
+
+          if (map[nr][nc] === 'S') {
+            db.ref(`rooms/${myRoom}/map/${nr}/${nc}`).set(' ');
+            // Chance de soltar um power-up de alcance no lugar do bloco destruído
+            if (Math.random() < POWERUP_SPAWN_CHANCE) {
+              db.ref(`rooms/${myRoom}/powerups/pu_${nr}_${nc}`).set({ r: nr, c: nc, type: 'range' });
+            }
+            break; // bloco destrutível absorve a explosão, não passa adiante
+          }
         }
       });
 
@@ -372,6 +401,20 @@
           else if (map[r] && map[r][c] === 'S') { ctx.fillStyle = '#8b4513'; ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); }
         }
       }
+
+      // Power-ups de alcance de explosão (desenhados como uma estrela laranja pulsante)
+      const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+      Object.values(powerups).forEach(p => {
+        ctx.fillStyle = '#ffca28';
+        ctx.beginPath();
+        ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.28 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#e65100';
+        ctx.font = 'bold 22px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText('💥', (p.c + 0.5) * grid, (p.r + 0.65) * grid);
+        ctx.textAlign = 'left';
+      });
 
       // Bombas (com indicador de "quase explodindo")
       const now = Date.now();
