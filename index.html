@@ -11,7 +11,7 @@
   <style>
     * { box-sizing: border-box; touch-action: manipulation; user-select: none; }
     body { margin: 0; background: #1a1a1a; color: white; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; }
-    #lobby { position: fixed; inset: 0; background: rgba(0,0,0,0.92); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px; }
+    #lobby { position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px; overflow-y: auto; }
     #canvas-container { position: relative; width: 100%; max-width: 600px; aspect-ratio: 15/13; }
     canvas { width: 100%; height: auto; background: #2e7d32; border: 4px solid #fff; image-rendering: pixelated; display: block; }
     .controls { width: 100%; max-width: 600px; padding: 20px; display: flex; justify-content: space-between; align-items: center; }
@@ -20,7 +20,7 @@
     .btn:active { background: #666; }
     .btn-bomb { width: 85px; height: 85px; border-radius: 50%; background: #d32f2f; font-weight: bold; border: 4px solid #fff; cursor: pointer; }
     .btn-bomb:active { background: #ff5252; }
-    input { padding: 10px; margin: 5px; border-radius: 5px; width: 220px; text-align: center; border: 2px solid #555; font-family: inherit; }
+    input { padding: 10px; margin: 5px; border-radius: 5px; width: 220px; text-align: center; border: 2px solid #555; font-family: inherit; background: #222; color: #fff; }
     button#join-btn { padding: 15px 30px; background: #f44336; color: white; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; font-size: 16px; margin-top: 10px; }
     button#join-btn:disabled { background: #777; cursor: default; }
     #status { padding: 10px; color: #ffeb3b; min-height: 24px; }
@@ -32,6 +32,14 @@
     #room-share { font-size: 12px; color: #9ccc65; margin-top: 4px; }
     #event-log { font-size: 12px; color: #80d8ff; min-height: 18px; margin-top: 2px; transition: opacity 0.3s; }
     #phase-banner { font-size: 14px; color: #fff176; min-height: 18px; margin-top: 2px; }
+
+    /* Estilos do Novo Ranking */
+    #ranking-box { margin-top: 25px; background: #222; border: 2px dashed #ffeb3b; padding: 15px; width: 280px; border-radius: 5px; text-align: left; }
+    #ranking-box h3 { margin: 0 0 10px 0; text-align: center; color: #ffeb3b; font-size: 16px; letter-spacing: 1px; }
+    .ranking-item { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 4px; }
+    .ranking-item:nth-child(2) { color: #ffd700; } /* Ouro */
+    .ranking-item:nth-child(3) { color: #c0c0c0; } /* Prata */
+    .ranking-item:nth-child(4) { color: #cd7f32; } /* Bronze */
   </style>
 </head>
 <body>
@@ -43,6 +51,11 @@
     <button id="join-btn">ENTRAR NO JOGO</button>
     <p id="lobby-error"></p>
     <p style="font-size: 12px; margin-top: 10px;">O jogo inicia de 2 a 4 jogadores.</p>
+
+    <div id="ranking-box">
+      <h3>🏆 TOP 5 VITORIOSOS 🏆</h3>
+      <div id="ranking-list">Carregando scores...</div>
+    </div>
   </div>
 
   <div id="status">Conecte-se para jogar</div>
@@ -94,9 +107,8 @@
     const EXPLOSION_VISIBLE_MS = 600;
     const RESPAWN_DELAY_MS = 3000;
     const BASE_BOMB_RANGE = 2; 
-    const POWERUP_SPAWN_CHANCE = 0.45; // Chance aumentada para 45%
+    const POWERUP_SPAWN_CHANCE = 0.45;
 
-    // Sincronização do Relógio Global do Servidor
     let serverTimeOffset = 0;
     db.ref('.info/serverTimeOffset').on('value', snap => {
       serverTimeOffset = snap.val() || 0;
@@ -116,7 +128,7 @@
     let processedBombIds = new Set();
     let localExplodedBombs = new Set(); 
     let myRespawnScheduled = false;
-    let powerupAlternator = 'range'; // Força alternância entre os itens
+    let powerupAlternator = 'range';
 
     const SPAWNS = [
       { r: 1, c: 1 },              
@@ -128,6 +140,27 @@
 
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
+
+    // Listener em Tempo Real para preencher o Ranking Global na Tela Inicial
+    db.ref('leaderboard').orderByValue().limitToLast(5).on('value', snap => {
+      const listEl = document.getElementById('ranking-list');
+      const data = snap.val() || {};
+      
+      // Converte em array e ordena do maior para o menor
+      const sorted = Object.entries(data).sort((a, b) => b[1] - a[1]);
+      
+      if (sorted.length === 0) {
+        listEl.innerHTML = '<div style="text-align:center;color:#777;">Nenhuma vitória ainda</div>';
+        return;
+      }
+
+      listEl.innerHTML = sorted.map(([name, score], idx) => `
+        <div class="ranking-item">
+          <span>${idx + 1}. ${name}</span>
+          <span>${score} vit.</span>
+        </div>
+      `).join('');
+    });
 
     function updateScoreboard() {
       const pArr = Object.values(players).sort((a, b) => a.slot - b.slot);
@@ -152,7 +185,7 @@
       const nameVal = document.getElementById('p-name').value.trim();
       const roomVal = document.getElementById('r-id').value.trim();
 
-      if (!roomVal) { lobbyError.innerText = 'Digite um ID de sala.'; return; }
+      if (!roomVal) { lobbyError.innerText = 'Digite um ID da sala.'; return; }
 
       joinBtn.disabled = true;
       lobbyError.innerText = '';
@@ -305,7 +338,6 @@
       const nextPhase = currentPhase + 1;
       generateHardMap(roomRef, nextPhase);
 
-      // EMBARALHA AS POSIÇÕES PARA NUNCA NASCER NO MESMO LUGAR
       const shuffledSpawns = [...SPAWNS].sort(() => Math.random() - 0.5);
 
       ids.forEach((pid, index) => {
@@ -333,8 +365,12 @@
           const winnerId = ids.find(pid => players[pid].alive);
           roundWinnerName = players[winnerId].name;
           if (winnerId === myId) {
+            // Atualiza pontos locais na sala
             const myCurrentPoints = players[myId].points || 0;
             db.ref(`rooms/${myRoom}/players/${myId}`).update({ points: myCurrentPoints + 1 });
+            
+            // ATUALIZAÇÃO DO RANKING GLOBAL (Soma +1 vitória permanente para o Nome)
+            db.ref(`leaderboard/${myName}`).transaction(currentWins => (currentWins || 0) + 1);
           }
         }
         showPhaseBanner(aliveCount === 1 ? `${roundWinnerName} venceu a rodada! Próxima fase...` : 'Empate! Próxima fase...');
@@ -380,10 +416,8 @@
       const { r, c } = me;
       const bid = `b_${myId}_${Date.now()}`;
       
-      // Bloqueia colocar bomba exatamente no mesmo lugar de outra
       if (isBombAt(r, c)) return; 
 
-      // Só conta as bombas ativas, ignorando as que já explodiram
       const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking');
       const myMaxBombs = me.maxBombs || 1; 
 
@@ -451,7 +485,6 @@
          explodedAt: firebase.database.ServerValue.TIMESTAMP
       });
 
-      // GARANTE QUE O ITEM ALTERNE ENTRE FOGO E BOMBA
       blocksToDestroy.forEach(block => {
         db.ref(`rooms/${myRoom}/map/${block.r}/${block.c}`).set(' ');
         if (Math.random() < POWERUP_SPAWN_CHANCE) {
