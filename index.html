@@ -28,6 +28,7 @@
     #lobby-error { color: #ff5252; font-size: 13px; min-height: 18px; margin-top: 5px; }
     #room-share { font-size: 12px; color: #9ccc65; margin-top: 4px; }
     #event-log { font-size: 12px; color: #80d8ff; min-height: 18px; margin-top: 2px; transition: opacity 0.3s; }
+    #phase-banner { font-size: 14px; color: #fff176; min-height: 18px; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -43,6 +44,7 @@
 
   <div id="status">Conecte-se para jogar</div>
   <div id="room-share"></div>
+  <div id="phase-banner"></div>
   <div id="event-log"></div>
 
   <div id="canvas-container">
@@ -77,14 +79,27 @@
     const canvas = document.getElementById('game');
     const ctx = canvas.getContext('2d');
     const grid = 64, rows = 13, cols = 15;
-    let myId, myRoom, myName;
-    let players = {}, map = [], bombs = {}, explosions = [];
+    const BOMB_FUSE_MS = 2500;
+    const EXPLOSION_VISIBLE_MS = 600;
+    const RESPAWN_DELAY_MS = 3000;
+
+    let myId, myRoom, myName, roomRef;
+    let players = {}, map = [], bombs = {}, explosionEvents = {};
+    let currentPhase = 1;
     let gameActive = false;
     let loopStarted = false;
     let knownPlayerIds = new Set();
     let eventLogTimeout = null;
+    let processedBombIds = new Set();
+    let myRespawnScheduled = false;
+    let localExplosions = []; // efeitos visuais locais com contagem decrescente
 
-    // Cores diferentes para cada jogador que entra na sala
+    const SPAWNS = [
+      { r: 1, c: 1 },
+      { r: rows - 2, c: cols - 2 },
+      { r: 1, c: cols - 2 },
+      { r: rows - 2, c: 1 }
+    ];
     const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50'];
 
     const joinBtn = document.getElementById('join-btn');
@@ -107,9 +122,8 @@
       myId = 'p_' + Math.random().toString(36).substring(2, 9);
 
       try {
-        const roomRef = db.ref('rooms/' + myRoom);
+        roomRef = db.ref('rooms/' + myRoom);
 
-        // Garante leitura atual de jogadores antes de decidir cor/posição e se precisa gerar mapa
         const snap = await roomRef.once('value');
         const existingData = snap.val() || {};
         const existingPlayers = existingData.players || {};
@@ -122,22 +136,16 @@
         }
 
         if (!existingData.map) {
-          generateHardMap(roomRef);
+          generateHardMap(roomRef, 1);
         }
 
-        // Posições iniciais nos 4 cantos livres do mapa
-        const spawns = [
-          { r: 1, c: 1 },
-          { r: rows - 2, c: cols - 2 },
-          { r: 1, c: cols - 2 },
-          { r: rows - 2, c: 1 }
-        ];
-        const spawn = spawns[existingCount % spawns.length];
-        const color = COLORS[existingCount % COLORS.length];
+        const slot = existingCount % SPAWNS.length;
+        const spawn = SPAWNS[slot];
+        const color = COLORS[slot];
 
         const myPlayerRef = roomRef.child('players/' + myId);
         await myPlayerRef.set({
-          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color
+          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot
         });
         myPlayerRef.onDisconnect().remove();
 
@@ -147,12 +155,29 @@
           players = newPlayers;
           const count = Object.keys(players).length;
           gameActive = count >= 2;
-          document.getElementById('status').innerText =
-            count < 2 ? `Aguardando jogadores... (${count}/2)` : 'BATALHA!';
+          if (count < 2) {
+            document.getElementById('status').innerText = `Aguardando jogadores... (${count}/2)`;
+          } else {
+            document.getElementById('status').innerText = 'BATALHA!';
+            checkRoundEnd();
+          }
         });
 
         roomRef.child('map').on('value', s => { map = s.val() || []; });
-        roomRef.child('bombs').on('value', s => { bombs = s.val() || {}; });
+        roomRef.child('phase').on('value', s => {
+          const p = s.val();
+          if (p && p !== currentPhase) {
+            currentPhase = p;
+            showPhaseBanner(`FASE ${currentPhase}`);
+          } else if (p) {
+            currentPhase = p;
+          }
+        });
+        roomRef.child('bombs').on('value', s => {
+          const newBombs = s.val() || {};
+          handleBombSync(newBombs);
+          bombs = newBombs;
+        });
 
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('room-share').innerText = `Sala: ${myRoom} — compartilhe esse ID com seu amigo`;
@@ -160,6 +185,7 @@
         if (!loopStarted) {
           loopStarted = true;
           requestAnimationFrame(loop);
+          setInterval(tickBombs, 150);
         }
       } catch (err) {
         console.error(err);
@@ -176,17 +202,21 @@
       eventLogTimeout = setTimeout(() => { el.style.opacity = '0'; }, 3000);
     }
 
+    function showPhaseBanner(msg) {
+      const el = document.getElementById('phase-banner');
+      el.innerText = msg;
+      setTimeout(() => { if (el.innerText === msg) el.innerText = ''; }, 2500);
+    }
+
     function detectPlayerEvents(newPlayers) {
       const newIds = new Set(Object.keys(newPlayers));
 
-      // Detecta quem entrou (presente agora, não estava antes, e não sou eu entrando pela 1a vez)
       newIds.forEach(pid => {
         if (!knownPlayerIds.has(pid) && knownPlayerIds.size > 0 && pid !== myId) {
           showEventMessage(`${newPlayers[pid].name} entrou na sala`);
         }
       });
 
-      // Detecta quem saiu (estava antes, não está mais agora)
       knownPlayerIds.forEach(pid => {
         if (!newIds.has(pid)) {
           const leftName = (players[pid] && players[pid].name) || 'Jogador';
@@ -197,7 +227,7 @@
       knownPlayerIds = newIds;
     }
 
-    function generateHardMap(ref) {
+    function generateHardMap(ref, phaseNum) {
       let newMap = [];
       for (let r = 0; r < rows; r++) {
         newMap[r] = [];
@@ -207,12 +237,44 @@
           } else if ((r < 3 && c < 3) || (r > rows - 4 && c > cols - 4) || (r < 3 && c > cols - 4) || (r > rows - 4 && c < 3)) {
             newMap[r][c] = ' ';
           } else {
-            // FASE DIFÍCIL: 85% de blocos
             newMap[r][c] = Math.random() < 0.85 ? 'S' : ' ';
           }
         }
       }
       ref.child('map').set(newMap);
+      ref.child('phase').set(phaseNum);
+      ref.child('bombs').remove();
+    }
+
+    // Avança de fase: gera novo mapa e revive todo mundo nos spawns.
+    // Só o jogador com menor id entre os conectados executa, pra evitar corrida múltipla.
+    function startNextPhase() {
+      const ids = Object.keys(players).sort();
+      if (ids[0] !== myId) return;
+
+      const nextPhase = currentPhase + 1;
+      generateHardMap(roomRef, nextPhase);
+
+      ids.forEach(pid => {
+        const slot = (players[pid] && typeof players[pid].slot === 'number') ? players[pid].slot : 0;
+        const spawn = SPAWNS[slot % SPAWNS.length];
+        roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true });
+      });
+    }
+
+    // Quando só resta 1 (ou 0) jogador vivo entre os conectados, agenda a próxima fase.
+    function checkRoundEnd() {
+      const ids = Object.keys(players);
+      if (ids.length < 2) return;
+      const aliveCount = ids.filter(pid => players[pid].alive).length;
+      if (aliveCount <= 1 && !myRespawnScheduled) {
+        myRespawnScheduled = true;
+        showPhaseBanner(aliveCount === 1 ? 'Vencedor da fase! Próxima fase em 3s...' : 'Empate! Próxima fase em 3s...');
+        setTimeout(() => {
+          startNextPhase();
+          myRespawnScheduled = false;
+        }, RESPAWN_DELAY_MS);
+      }
     }
 
     function move(dr, dc) {
@@ -228,29 +290,64 @@
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
       const { r, c } = me;
-      const bid = `b_${r}_${c}`;
-      if (!bombs[bid]) {
-        db.ref(`rooms/${myRoom}/bombs/${bid}`).set({ r, c, owner: myId });
-        setTimeout(() => {
-          db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
-          triggerExplosion(r, c);
-        }, 3000);
-      }
+      const bid = `b_${myId}_${Date.now()}`;
+      // Limite: 1 bomba viva por jogador por vez
+      const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId);
+      if (myActiveBombs.length >= 1) return;
+
+      db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
+        r, c, owner: myId, plantedAt: firebase.database.ServerValue.TIMESTAMP
+      });
     }
 
-    function triggerExplosion(r, c) {
+    // Verifica periodicamente (client-side, qualquer jogador pode disparar)
+    // se alguma bomba já passou do tempo de explodir.
+    function tickBombs() {
+      const now = Date.now();
+      Object.entries(bombs).forEach(([bid, b]) => {
+        if (!b.plantedAt) return; // ainda não resolveu timestamp do servidor
+        if (now - b.plantedAt >= BOMB_FUSE_MS && !processedBombIds.has(bid)) {
+          processedBombIds.add(bid);
+          resolveExplosion(bid, b.r, b.c);
+        }
+      });
+    }
+
+    // Detecta bombas removidas/novas vindas do Firebase (sincroniza estado local)
+    function handleBombSync(newBombs) {
+      Object.keys(bombs).forEach(bid => {
+        if (!newBombs[bid]) processedBombIds.delete(bid);
+      });
+    }
+
+    function resolveExplosion(bid, r, c) {
       const area = [{ r: 0, c: 0 }, { r: 1, c: 0 }, { r: -1, c: 0 }, { r: 0, c: 1 }, { r: 0, c: -1 }];
+      const hitCells = [];
       area.forEach(d => {
         const nr = r + d.r, nc = c + d.c;
-        if (map[nr] && map[nr][nc] === 'S') {
+        if (!map[nr] || map[nr][nc] === 'W') return; // parede bloqueia a explosão
+        hitCells.push({ r: nr, c: nc });
+        if (map[nr][nc] === 'S') {
           db.ref(`rooms/${myRoom}/map/${nr}/${nc}`).set(' ');
         }
-        Object.keys(players).forEach(pid => {
-          if (players[pid].r === nr && players[pid].c === nc) {
-            db.ref(`rooms/${myRoom}/players/${pid}`).update({ alive: false });
-          }
-        });
-        explosions.push({ r: nr, c: nc, t: 15 });
+      });
+
+      // Cada cliente checa se O PRÓPRIO jogador foi atingido e atualiza seu status.
+      // Evita que todo mundo escreva o status de todo mundo (menos conflito).
+      const me = players[myId];
+      if (me && me.alive) {
+        const hit = hitCells.some(cell => cell.r === me.r && cell.c === me.c);
+        if (hit) {
+          db.ref(`rooms/${myRoom}/players/${myId}`).update({ alive: false });
+        }
+      }
+
+      // Remove a bomba do Firebase (qualquer cliente que detectar primeiro remove)
+      db.ref(`rooms/${myRoom}/bombs/${bid}`).remove().catch(() => {});
+
+      // Efeito visual local
+      hitCells.forEach(cell => {
+        localExplosions.push({ r: cell.r, c: cell.c, until: Date.now() + EXPLOSION_VISIBLE_MS });
       });
     }
 
@@ -262,17 +359,28 @@
           else if (map[r] && map[r][c] === 'S') { ctx.fillStyle = '#8b4513'; ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); }
         }
       }
+
+      // Bombas (com indicador de "quase explodindo")
+      const now = Date.now();
       Object.values(bombs).forEach(b => {
-        ctx.fillStyle = '#000';
+        const elapsed = b.plantedAt ? now - b.plantedAt : 0;
+        const pulsing = elapsed > BOMB_FUSE_MS - 800;
+        ctx.fillStyle = pulsing ? '#ff5252' : '#000';
         ctx.beginPath();
         ctx.arc((b.c + 0.5) * grid, (b.r + 0.5) * grid, grid * 0.4, 0, Math.PI * 2);
         ctx.fill();
       });
-      explosions = explosions.filter(e => {
-        ctx.fillStyle = 'rgba(255, 100, 0, 0.6)';
+
+      // Explosões visuais
+      localExplosions = localExplosions.filter(e => {
+        if (now > e.until) return false;
+        ctx.fillStyle = 'rgba(255, 140, 0, 0.75)';
         ctx.fillRect(e.c * grid, e.r * grid, grid, grid);
-        return --e.t > 0;
+        ctx.fillStyle = 'rgba(255, 235, 59, 0.9)';
+        ctx.fillRect(e.c * grid + 10, e.r * grid + 10, grid - 20, grid - 20);
+        return true;
       });
+
       ctx.font = '16px Courier New';
       Object.values(players).forEach(p => {
         if (!p.alive) return;
@@ -283,6 +391,7 @@
         ctx.fillStyle = '#fff';
         ctx.fillText(p.name, p.c * grid + 10, p.r * grid);
       });
+
       requestAnimationFrame(loop);
     }
 
@@ -297,7 +406,6 @@
     bind('right', () => move(0, 1));
     bind('bomb-btn', placeBomb);
 
-    // Atalhos de teclado para testar em desktop
     document.addEventListener('keydown', e => {
       if (e.key === 'ArrowUp') move(-1, 0);
       if (e.key === 'ArrowDown') move(1, 0);
