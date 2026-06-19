@@ -25,7 +25,6 @@
     button#join-btn:disabled { background: #777; cursor: default; }
     #status { padding: 10px; color: #ffeb3b; min-height: 24px; }
     
-    /* Placar Ajustado para 4 Jogadores */
     #scoreboard { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; max-width: 600px; padding: 8px 15px; font-weight: bold; font-size: 16px; text-transform: uppercase; background: #222; border: 2px solid #555; margin-bottom: 5px; border-radius: 5px; }
     .score-side { display: flex; align-items: center; }
     
@@ -97,6 +96,17 @@
     const BASE_BOMB_RANGE = 2; 
     const POWERUP_SPAWN_CHANCE = 0.35; 
 
+    // NOVO: Sincronização do Relógio Global do Servidor
+    let serverTimeOffset = 0;
+    db.ref('.info/serverTimeOffset').on('value', snap => {
+      serverTimeOffset = snap.val() || 0;
+    });
+
+    // Função que garante que todos os jogadores estejam no mesmo milissegundo exato
+    function getServerTime() {
+      return Date.now() + serverTimeOffset;
+    }
+
     let myId, myRoom, myName, roomRef;
     let players = {}, map = [], bombs = {}, powerups = {};
     let currentPhase = 1;
@@ -108,7 +118,6 @@
     let localExplodedBombs = new Set(); 
     let myRespawnScheduled = false;
 
-    // As 4 posições corretas das quinas do mapa
     const SPAWNS = [
       { r: 1, c: 1 },              
       { r: rows - 2, c: cols - 2 }, 
@@ -120,7 +129,6 @@
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
 
-    // Novo Placar Perfeito para 4 Jogadores
     function updateScoreboard() {
       const pArr = Object.values(players).sort((a, b) => a.slot - b.slot);
       
@@ -129,7 +137,6 @@
         if(!el) continue;
         
         if(pArr[i]) {
-          // Lado Esquerdo (Jogadores 1 e 3) x Lado Direito (Jogadores 2 e 4)
           if(i % 2 === 0) {
             el.innerHTML = `<span style="color:${pArr[i].color}">${pArr[i].name}</span>&nbsp; ${pArr[i].points || 0}`;
           } else {
@@ -161,7 +168,6 @@
         const existingPlayers = existingData.players || {};
         const existingCount = Object.keys(existingPlayers).length;
 
-        // Limite travado exatamente em 4 jogadores
         if (existingCount >= 4) {
           lobbyError.innerText = 'Sala cheia (Máximo 4 jogadores).';
           joinBtn.disabled = false;
@@ -170,7 +176,6 @@
 
         if (!existingData.map) generateHardMap(roomRef, 1);
 
-        // Lógica de Vagas (Slots) reforçada para impedir bugs
         const usedSlots = new Set(Object.values(existingPlayers).map(p => p.slot).filter(s => typeof s === 'number'));
         let slot = 0;
         while (usedSlots.has(slot) && slot < 4) slot++;
@@ -181,7 +186,8 @@
 
         const myPlayerRef = roomRef.child('players/' + myId);
         await myPlayerRef.set({
-          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, bombRange: BASE_BOMB_RANGE, points: 0 
+          name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, 
+          bombRange: BASE_BOMB_RANGE, maxBombs: 1, points: 0 // Iniciando maxBombs
         });
         myPlayerRef.onDisconnect().remove();
 
@@ -192,7 +198,6 @@
           updateScoreboard(); 
           
           const count = Object.keys(players).length;
-          // O Jogo libera o controle de TODOS se houver 2 ou mais
           gameActive = count >= 2;
           
           if (count < 2) {
@@ -303,7 +308,8 @@
       ids.forEach(pid => {
         const slot = (players[pid] && typeof players[pid].slot === 'number') ? players[pid].slot : 0;
         const spawn = SPAWNS[slot % 4];
-        roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true, bombRange: BASE_BOMB_RANGE });
+        // Reseta o poder da bomba e a quantidade para a nova fase
+        roomRef.child('players/' + pid).update({ r: spawn.r, c: spawn.c, alive: true, bombRange: BASE_BOMB_RANGE, maxBombs: 1 });
       });
     }
 
@@ -340,18 +346,25 @@
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
       const nr = me.r + dr, nc = me.c + dc;
-      // Trava de segurança para impedir erro de leitura de mapa no nascimento
       if (!map || !map[nr] || map[nr][nc] !== ' ') return;
       if (isBombAt(nr, nc)) return; 
 
       db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
 
+      // LÓGICA DE COLETA DOS NOVOS ITENS
       const pid = `pu_${nr}_${nc}`;
-      if (powerups[pid]) {
-        const currentRange = me.bombRange || BASE_BOMB_RANGE;
-        db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
+      const pu = powerups[pid];
+      if (pu) {
+        if (pu.type === 'amount') {
+          const currentMax = me.maxBombs || 1;
+          db.ref(`rooms/${myRoom}/players/${myId}`).update({ maxBombs: currentMax + 1 });
+          showEventMessage('+1 Bomba Extra! 💣');
+        } else {
+          const currentRange = me.bombRange || BASE_BOMB_RANGE;
+          db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
+          showEventMessage('Poder de fogo aumentado! 🔥');
+        }
         db.ref(`rooms/${myRoom}/powerups/${pid}`).remove();
-        showEventMessage('Poder de fogo aumentado! 🔥');
       }
     }
 
@@ -362,7 +375,9 @@
       const bid = `b_${myId}_${Date.now()}`;
       
       const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId);
-      if (myActiveBombs.length >= 1) return;
+      const myMaxBombs = me.maxBombs || 1; // Verifica o limite de bombas do jogador
+
+      if (myActiveBombs.length >= myMaxBombs) return;
 
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
         r, c, owner: myId, range: me.bombRange || BASE_BOMB_RANGE, plantedAt: firebase.database.ServerValue.TIMESTAMP, state: 'ticking'
@@ -370,7 +385,7 @@
     }
 
     function tickBombs() {
-      const now = Date.now();
+      const serverNow = getServerTime(); // Usando o relógio sincronizado do servidor
       const me = players[myId];
       if (!me) return;
 
@@ -381,13 +396,14 @@
         const responsible = players[b.owner] ? b.owner : ids[0];
         const iAmResponsible = (responsible === myId);
 
-        if (b.state === 'ticking' && now - b.plantedAt >= BOMB_FUSE_MS) {
+        // A bomba calcula o tempo baseado unicamente no relógio global
+        if (b.state === 'ticking' && serverNow - b.plantedAt >= BOMB_FUSE_MS) {
           if (iAmResponsible && !processedBombIds.has(bid)) {
             processedBombIds.add(bid);
             triggerExplosion(bid, b);
           }
         } 
-        else if (b.state === 'exploding' && b.explodedAt && now - b.explodedAt >= EXPLOSION_VISIBLE_MS) {
+        else if (b.state === 'exploding' && b.explodedAt && serverNow - b.explodedAt >= EXPLOSION_VISIBLE_MS) {
           if (iAmResponsible) {
             db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
           }
@@ -426,10 +442,12 @@
          explodedAt: firebase.database.ServerValue.TIMESTAMP
       });
 
+      // LÓGICA DE GERAR 2 TIPOS DE ITENS DIFERENTES ALEATORIAMENTE
       blocksToDestroy.forEach(block => {
         db.ref(`rooms/${myRoom}/map/${block.r}/${block.c}`).set(' ');
         if (Math.random() < POWERUP_SPAWN_CHANCE) {
-          db.ref(`rooms/${myRoom}/powerups/pu_${block.r}_${block.c}`).set({ r: block.r, c: block.c, type: 'range' });
+          const pType = Math.random() < 0.5 ? 'range' : 'amount'; // 50% de chance para cada tipo de item
+          db.ref(`rooms/${myRoom}/powerups/pu_${block.r}_${block.c}`).set({ r: block.r, c: block.c, type: pType });
         }
       });
     }
@@ -454,19 +472,21 @@
       }
 
       const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
+      
+      // DESENHO DOS ITENS NO MAPA
       Object.values(powerups).forEach(p => {
-        ctx.fillStyle = '#ffca28';
+        ctx.fillStyle = p.type === 'amount' ? '#29b6f6' : '#ffca28'; // Azul para bomba, Amarelo para fogo
         ctx.beginPath();
         ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.28 * pulse, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = '#e65100';
+        ctx.fillStyle = '#fff';
         ctx.font = 'bold 22px Courier New';
         ctx.textAlign = 'center';
-        ctx.fillText('🔥', (p.c + 0.5) * grid, (p.r + 0.65) * grid);
+        ctx.fillText(p.type === 'amount' ? '💣' : '🔥', (p.c + 0.5) * grid, (p.r + 0.65) * grid);
         ctx.textAlign = 'left';
       });
 
-      const now = Date.now();
+      const serverNow = getServerTime(); // Relógio sincronizado para os visuais da bomba também
       
       Object.entries(bombs).forEach(([bid, b]) => {
         if (b.state === 'exploding' && b.hitCells) {
@@ -486,7 +506,7 @@
                 }
             }
         } else if (b.state === 'ticking') {
-            const elapsed = b.plantedAt ? now - b.plantedAt : 0;
+            const elapsed = b.plantedAt ? serverNow - b.plantedAt : 0;
             const pulsing = elapsed > (BOMB_FUSE_MS - 800);
             ctx.fillStyle = pulsing ? '#ff5252' : '#000';
             ctx.beginPath();
