@@ -27,6 +27,7 @@
     #status { padding: 10px; color: #ffeb3b; min-height: 24px; }
     #lobby-error { color: #ff5252; font-size: 13px; min-height: 18px; margin-top: 5px; }
     #room-share { font-size: 12px; color: #9ccc65; margin-top: 4px; }
+    #event-log { font-size: 12px; color: #80d8ff; min-height: 18px; margin-top: 2px; transition: opacity 0.3s; }
   </style>
 </head>
 <body>
@@ -42,6 +43,7 @@
 
   <div id="status">Conecte-se para jogar</div>
   <div id="room-share"></div>
+  <div id="event-log"></div>
 
   <div id="canvas-container">
     <canvas width="960" height="832" id="game"></canvas>
@@ -79,6 +81,8 @@
     let players = {}, map = [], bombs = {}, explosions = [];
     let gameActive = false;
     let loopStarted = false;
+    let knownPlayerIds = new Set();
+    let eventLogTimeout = null;
 
     // Cores diferentes para cada jogador que entra na sala
     const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50'];
@@ -138,7 +142,9 @@
         myPlayerRef.onDisconnect().remove();
 
         roomRef.child('players').on('value', s => {
-          players = s.val() || {};
+          const newPlayers = s.val() || {};
+          detectPlayerEvents(newPlayers);
+          players = newPlayers;
           const count = Object.keys(players).length;
           gameActive = count >= 2;
           document.getElementById('status').innerText =
@@ -162,6 +168,35 @@
       }
     };
 
+    function showEventMessage(msg) {
+      const el = document.getElementById('event-log');
+      el.innerText = msg;
+      el.style.opacity = '1';
+      if (eventLogTimeout) clearTimeout(eventLogTimeout);
+      eventLogTimeout = setTimeout(() => { el.style.opacity = '0'; }, 3000);
+    }
+
+    function detectPlayerEvents(newPlayers) {
+      const newIds = new Set(Object.keys(newPlayers));
+
+      // Detecta quem entrou (presente agora, não estava antes, e não sou eu entrando pela 1a vez)
+      newIds.forEach(pid => {
+        if (!knownPlayerIds.has(pid) && knownPlayerIds.size > 0 && pid !== myId) {
+          showEventMessage(`${newPlayers[pid].name} entrou na sala`);
+        }
+      });
+
+      // Detecta quem saiu (estava antes, não está mais agora)
+      knownPlayerIds.forEach(pid => {
+        if (!newIds.has(pid)) {
+          const leftName = (players[pid] && players[pid].name) || 'Jogador';
+          showEventMessage(`${leftName} saiu da sala`);
+        }
+      });
+
+      knownPlayerIds = newIds;
+    }
+
     function generateHardMap(ref) {
       let newMap = [];
       for (let r = 0; r < rows; r++) {
@@ -169,7 +204,7 @@
         for (let c = 0; c < cols; c++) {
           if (r === 0 || r === rows - 1 || c === 0 || c === cols - 1 || (r % 2 === 0 && c % 2 === 0)) {
             newMap[r][c] = 'W';
-          } else if ((r < 2 && c < 2) || (r > rows - 3 && c > cols - 3) || (r < 2 && c > cols - 3) || (r > rows - 3 && c < 2)) {
+          } else if ((r < 3 && c < 3) || (r > rows - 4 && c > cols - 4) || (r < 3 && c > cols - 4) || (r > rows - 4 && c < 3)) {
             newMap[r][c] = ' ';
           } else {
             // FASE DIFÍCIL: 85% de blocos
