@@ -34,12 +34,15 @@
     #phase-banner { font-size: 14px; color: #fff176; min-height: 18px; margin-top: 2px; }
 
     /* Estilos do Novo Ranking */
-    #ranking-box { margin-top: 25px; background: #222; border: 2px dashed #ffeb3b; padding: 15px; width: 280px; border-radius: 5px; text-align: left; }
+    #ranking-box { margin-top: 25px; background: #222; border: 2px dashed #ffeb3b; padding: 15px; width: 320px; border-radius: 5px; text-align: left; }
     #ranking-box h3 { margin: 0 0 10px 0; text-align: center; color: #ffeb3b; font-size: 16px; letter-spacing: 1px; }
-    .ranking-item { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 4px; }
+    .ranking-item { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 6px; padding: 4px; border-bottom: 1px solid #333;}
     .ranking-item:nth-child(2) { color: #ffd700; } 
     .ranking-item:nth-child(3) { color: #c0c0c0; } 
     .ranking-item:nth-child(4) { color: #cd7f32; } 
+    
+    /* Destaque para o Campeão (10 vitórias ou mais) */
+    .champion { color: #00e676 !important; font-weight: bold; text-shadow: 0 0 5px rgba(0, 230, 118, 0.5); background: rgba(0, 230, 118, 0.1); border-radius: 4px; border-bottom: none; }
   </style>
 </head>
 <body>
@@ -53,8 +56,8 @@
     <p style="font-size: 12px; margin-top: 10px;">O jogo inicia de 2 a 4 jogadores.</p>
 
     <div id="ranking-box">
-      <h3>🏆 TOP 5 VITORIOSOS 🏆</h3>
-      <div id="ranking-list">Carregando scores...</div>
+      <h3>🏆 TOP 5 GLOBAIS 🏆</h3>
+      <div id="ranking-list">Carregando placar...</div>
     </div>
   </div>
 
@@ -141,26 +144,36 @@
     const joinBtn = document.getElementById('join-btn');
     const lobbyError = document.getElementById('lobby-error');
 
-    // Listener corrigido para atualização contínua em tempo real
+    // LISTENER DO RANKING COM REGRA DOS 10 PONTOS
     db.ref('leaderboard').on('value', snap => {
       const listEl = document.getElementById('ranking-list');
       const data = snap.val() || {};
       
       const sorted = Object.entries(data)
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 5); // Pega apenas o Top 5
+        .slice(0, 5); 
       
       if (sorted.length === 0) {
         listEl.innerHTML = '<div style="text-align:center;color:#777;">Nenhuma vitória ainda</div>';
         return;
       }
 
-      listEl.innerHTML = sorted.map(([name, score], idx) => `
-        <div class="ranking-item">
-          <span>${idx + 1}. ${name}</span>
+      listEl.innerHTML = sorted.map(([name, score], idx) => {
+        const isChampion = score >= 10;
+        let displayName = `${idx + 1}. ${name}`;
+        
+        // Se bateu 10 vitórias, adiciona o título
+        if (isChampion) {
+            displayName = `👑 ${name} (CAMPEÃO)`;
+        }
+
+        return `
+        <div class="ranking-item ${isChampion ? 'champion' : ''}">
+          <span>${displayName}</span>
           <span>${score} vit.</span>
         </div>
-      `).join('');
+        `;
+      }).join('');
     });
 
     function updateScoreboard() {
@@ -370,8 +383,11 @@
             const myCurrentPoints = players[myId].points || 0;
             db.ref(`rooms/${myRoom}/players/${myId}`).update({ points: myCurrentPoints + 1 });
             
-            // Gravação do ranking reestruturada para prevenir falhas assíncronas
-            db.ref(`leaderboard/${myName}`).transaction((currentWins) => {
+            // CORREÇÃO: Limpamos caracteres inválidos do nome antes de salvar no Firebase
+            // Firebase não aceita chaves com: . # $ [ ]
+            const safeName = myName.replace(/[\.\#\$\[\]]/g, "_");
+            
+            db.ref(`leaderboard/${safeName}`).transaction((currentWins) => {
               return (currentWins || 0) + 1;
             });
           }
