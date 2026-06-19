@@ -43,7 +43,7 @@
     <input type="text" id="r-id" placeholder="ID da Sala (ex: sala1)">
     <button id="join-btn">ENTRAR NO JOGO</button>
     <p id="lobby-error"></p>
-    <p style="font-size: 12px; margin-top: 10px;">O jogo inicia com 2 jogadores. Combine o mesmo ID de sala com seu amigo.</p>
+    <p style="font-size: 12px; margin-top: 10px;">O jogo inicia com 2 jogadores.</p>
   </div>
 
   <div id="status">Conecte-se para jogar</div>
@@ -72,7 +72,6 @@
   </div>
 
   <script>
-    // Configuração do seu projeto Firebase
     const firebaseConfig = {
       apiKey: "AIzaSyAvDDcWaMa79_lPig78LCsHwdxqgMvf19I",
       authDomain: "bomberman-cc1db.firebaseapp.com",
@@ -91,10 +90,10 @@
     const grid = 64, rows = 13, cols = 15;
     
     // REGRAS ORIGINAIS DO BOMBERMAN
-    const BOMB_FUSE_MS = 2000; // Tempo de detonação fixado para sincronia (2s)
+    const BOMB_FUSE_MS = 2000; 
     const EXPLOSION_VISIBLE_MS = 600;
     const RESPAWN_DELAY_MS = 3000;
-    const BASE_BOMB_RANGE = 2; // Alcance inicial padrão
+    const BASE_BOMB_RANGE = 2; // Alcance inicial curto
     const POWERUP_SPAWN_CHANCE = 0.35; 
 
     let myId, myRoom, myName, roomRef;
@@ -105,8 +104,8 @@
     let knownPlayerIds = new Set();
     let eventLogTimeout = null;
     let processedBombIds = new Set();
+    let localExplodedBombs = new Set(); // Para garantir que o dano conte apenas uma vez
     let myRespawnScheduled = false;
-    let localExplosions = []; 
 
     const SPAWNS = [
       { r: 1, c: 1 },              
@@ -137,10 +136,7 @@
       const nameVal = document.getElementById('p-name').value.trim();
       const roomVal = document.getElementById('r-id').value.trim();
 
-      if (!roomVal) {
-        lobbyError.innerText = 'Digite um ID de sala para continuar.';
-        return;
-      }
+      if (!roomVal) { lobbyError.innerText = 'Digite um ID de sala.'; return; }
 
       joinBtn.disabled = true;
       lobbyError.innerText = '';
@@ -151,23 +147,20 @@
 
       try {
         roomRef = db.ref('rooms/' + myRoom);
-
         const snap = await roomRef.once('value');
         const existingData = snap.val() || {};
         const existingPlayers = existingData.players || {};
         const existingCount = Object.keys(existingPlayers).length;
 
         if (existingCount >= 4) {
-          lobbyError.innerText = 'Sala cheia. Tente outro ID de sala.';
+          lobbyError.innerText = 'Sala cheia.';
           joinBtn.disabled = false;
           return;
         }
 
         if (!existingData.map) generateHardMap(roomRef, 1);
 
-        const usedSlots = new Set(
-          Object.values(existingPlayers).map(p => p.slot).filter(s => typeof s === 'number')
-        );
+        const usedSlots = new Set(Object.values(existingPlayers).map(p => p.slot).filter(s => typeof s === 'number'));
         let slot = 0;
         while (usedSlots.has(slot) && slot < SPAWNS.length) slot++;
         if (slot >= SPAWNS.length) slot = existingCount % SPAWNS.length; 
@@ -219,36 +212,18 @@
           bombs = newBombs;
         });
 
-        // NOVO: Sincronizador Global de Explosão (Tira o bug da bomba invisível)
-        roomRef.child('explosions').on('child_added', s => {
-          const expl = s.val();
-          if (!expl || !expl.hitCells) return;
-          const now = Date.now();
-          expl.hitCells.forEach(cell => {
-            localExplosions.push({ r: cell.r, c: cell.c, until: now + EXPLOSION_VISIBLE_MS });
-          });
-          const me = players[myId];
-          if (me && me.alive) {
-            const hit = expl.hitCells.some(c => c.r === me.r && c.c === me.c);
-            if (hit) {
-              db.ref(`rooms/${myRoom}/players/${myId}`).update({ alive: false });
-            }
-          }
-        });
-
         roomRef.child('powerups').on('value', s => { powerups = s.val() || {}; });
 
         document.getElementById('lobby').style.display = 'none';
-        document.getElementById('room-share').innerText = `Sala: ${myRoom} — compartilhe esse ID com seu amigo`;
+        document.getElementById('room-share').innerText = `Sala: ${myRoom} — compartilhe o ID`;
 
         if (!loopStarted) {
           loopStarted = true;
           requestAnimationFrame(loop);
-          setInterval(tickBombs, 100); 
+          setInterval(tickBombs, 50); 
         }
       } catch (err) {
-        console.error(err);
-        lobbyError.innerText = 'Erro ao conectar. Verifique internet e tente novamente.';
+        lobbyError.innerText = 'Erro ao conectar.';
         joinBtn.disabled = false;
       }
     };
@@ -301,7 +276,7 @@
       ref.child('phase').set(phaseNum);
       ref.child('bombs').remove();
       ref.child('powerups').remove();
-      ref.child('explosions').remove(); // Limpa as explosões na nova fase
+      localExplodedBombs.clear(); 
     }
 
     function startNextPhase() {
@@ -344,7 +319,7 @@
     }
 
     function isBombAt(r, c) {
-      return Object.values(bombs).some(b => b.r === r && b.c === c);
+      return Object.values(bombs).some(b => b.r === r && b.c === c && b.state !== 'exploding');
     }
 
     function move(dr, dc) {
@@ -361,7 +336,7 @@
         const currentRange = me.bombRange || BASE_BOMB_RANGE;
         db.ref(`rooms/${myRoom}/players/${myId}`).update({ bombRange: currentRange + 1 });
         db.ref(`rooms/${myRoom}/powerups/${pid}`).remove();
-        showEventMessage('Poder de explosão aumentado! 💥');
+        showEventMessage('Poder de fogo aumentado! 🔥');
       }
     }
 
@@ -375,10 +350,11 @@
       if (myActiveBombs.length >= 1) return;
 
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
-        r, c, owner: myId, range: me.bombRange || BASE_BOMB_RANGE, plantedAt: firebase.database.ServerValue.TIMESTAMP
+        r, c, owner: myId, range: me.bombRange || BASE_BOMB_RANGE, plantedAt: firebase.database.ServerValue.TIMESTAMP, state: 'ticking'
       });
     }
 
+    // Gerenciador Inteligente de Bombas e Explosões
     function tickBombs() {
       const now = Date.now();
       const me = players[myId];
@@ -387,20 +363,27 @@
       Object.entries(bombs).forEach(([bid, b]) => {
         if (!b.plantedAt) return; 
         
-        // Espera o pavio queimar
-        if (now - b.plantedAt >= BOMB_FUSE_MS) {
-          const ids = Object.keys(players).sort();
-          const responsible = players[b.owner] ? b.owner : ids[0];
-          
-          // Somente UM jogador é o "juiz" desta bomba, mas todos veem a explosão
-          if (responsible === myId && !processedBombIds.has(bid)) {
+        const ids = Object.keys(players).sort();
+        const responsible = players[b.owner] ? b.owner : ids[0];
+        const iAmResponsible = (responsible === myId);
+
+        // 1. Hora de explodir (Muda a bomba para estado de fogo)
+        if (b.state === 'ticking' && now - b.plantedAt >= BOMB_FUSE_MS) {
+          if (iAmResponsible && !processedBombIds.has(bid)) {
             processedBombIds.add(bid);
             triggerExplosion(bid, b);
+          }
+        } 
+        // 2. Apagar o fogo (O fogo fica visível e depois a bomba some do Firebase)
+        else if (b.state === 'exploding' && b.explodedAt && now - b.explodedAt >= EXPLOSION_VISIBLE_MS) {
+          if (iAmResponsible) {
+            db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
           }
         }
       });
     }
 
+    // Calcula os blocos atingidos e atualiza no servidor
     function triggerExplosion(bid, b) {
       const r = b.r, c = b.c, bombRange = b.range || BASE_BOMB_RANGE;
       const directions = [{ dr: 0, dc: 0 }, { dr: 1, dc: 0 }, { dr: -1, dc: 0 }, { dr: 0, dc: 1 }, { dr: 0, dc: -1 }];
@@ -419,7 +402,7 @@
 
           hitCells.push({ r: nr, c: nc });
 
-          // O fogo DEVE parar no bloco destruído (Regra Original)
+          // O fogo DEVE parar no bloco destruído (Regra Original do Bomberman)
           if (map[nr][nc] === 'S') {
             blocksToDestroy.push({ r: nr, c: nc });
             break; 
@@ -427,36 +410,35 @@
         }
       });
 
-      // 1. Avisa pra TODA A SALA renderizar as chamas 
-      db.ref(`rooms/${myRoom}/explosions/${bid}`).set({ 
-        hitCells: hitCells, timestamp: firebase.database.ServerValue.TIMESTAMP 
+      // Transforma a bomba em explosão NO SERVIDOR para garantir sincronia visual
+      db.ref(`rooms/${myRoom}/bombs/${bid}`).update({
+         state: 'exploding',
+         hitCells: hitCells,
+         explodedAt: firebase.database.ServerValue.TIMESTAMP
       });
 
-      // 2. Quebra blocos e cria itens
+      // Destrói os blocos
       blocksToDestroy.forEach(block => {
         db.ref(`rooms/${myRoom}/map/${block.r}/${block.c}`).set(' ');
         if (Math.random() < POWERUP_SPAWN_CHANCE) {
           db.ref(`rooms/${myRoom}/powerups/pu_${block.r}_${block.c}`).set({ r: block.r, c: block.c, type: 'range' });
         }
       });
-
-      // 3. Remove a bomba da arena
-      db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
-
-      // 4. Limpa as sobras de dados do banco depois de 1 segundo
-      setTimeout(() => {
-        db.ref(`rooms/${myRoom}/explosions/${bid}`).remove();
-      }, 1000);
     }
 
     function handleBombSync(newBombs) {
       Object.keys(bombs).forEach(bid => {
-        if (!newBombs[bid]) processedBombIds.delete(bid);
+        if (!newBombs[bid]) {
+            processedBombIds.delete(bid);
+            localExplodedBombs.delete(bid);
+        }
       });
     }
 
     function loop() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Desenha o mapa
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           if (map[r] && map[r][c] === 'W') { ctx.fillStyle = '#444'; ctx.fillRect(c * grid, r * grid, grid, grid); }
@@ -464,6 +446,7 @@
         }
       }
 
+      // Desenha os Powerups
       const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 200);
       Object.values(powerups).forEach(p => {
         ctx.fillStyle = '#ffca28';
@@ -473,29 +456,44 @@
         ctx.fillStyle = '#e65100';
         ctx.font = 'bold 22px Courier New';
         ctx.textAlign = 'center';
-        ctx.fillText('💥', (p.c + 0.5) * grid, (p.r + 0.65) * grid);
+        ctx.fillText('🔥', (p.c + 0.5) * grid, (p.r + 0.65) * grid);
         ctx.textAlign = 'left';
       });
 
       const now = Date.now();
-      Object.values(bombs).forEach(b => {
-        const elapsed = b.plantedAt ? now - b.plantedAt : 0;
-        const pulsing = elapsed > (BOMB_FUSE_MS - 800);
-        ctx.fillStyle = pulsing ? '#ff5252' : '#000';
-        ctx.beginPath();
-        ctx.arc((b.c + 0.5) * grid, (b.r + 0.5) * grid, grid * 0.4, 0, Math.PI * 2);
-        ctx.fill();
+      
+      // Desenha as Bombas e Explosões Simultaneamente
+      Object.entries(bombs).forEach(([bid, b]) => {
+        if (b.state === 'exploding' && b.hitCells) {
+            // Desenha a linha de Fogo para TODOS os jogadores garantido
+            b.hitCells.forEach(cell => {
+                ctx.fillStyle = 'rgba(255, 140, 0, 0.75)';
+                ctx.fillRect(cell.c * grid, cell.r * grid, grid, grid);
+                ctx.fillStyle = 'rgba(255, 235, 59, 0.9)';
+                ctx.fillRect(cell.c * grid + 10, cell.r * grid + 10, grid - 20, grid - 20);
+            });
+
+            // Lógica de Dano (Roda apenas uma vez localmente para quem explodiu)
+            if (!localExplodedBombs.has(bid)) {
+                localExplodedBombs.add(bid);
+                const me = players[myId];
+                if (me && me.alive) {
+                    const hit = b.hitCells.some(c => c.r === me.r && c.c === me.c);
+                    if (hit) { db.ref(`rooms/${myRoom}/players/${myId}`).update({ alive: false }); }
+                }
+            }
+        } else if (b.state === 'ticking') {
+            // Desenha a Bomba Prestes a Explodir
+            const elapsed = b.plantedAt ? now - b.plantedAt : 0;
+            const pulsing = elapsed > (BOMB_FUSE_MS - 800);
+            ctx.fillStyle = pulsing ? '#ff5252' : '#000';
+            ctx.beginPath();
+            ctx.arc((b.c + 0.5) * grid, (b.r + 0.5) * grid, grid * 0.4, 0, Math.PI * 2);
+            ctx.fill();
+        }
       });
 
-      localExplosions = localExplosions.filter(e => {
-        if (now > e.until) return false;
-        ctx.fillStyle = 'rgba(255, 140, 0, 0.75)';
-        ctx.fillRect(e.c * grid, e.r * grid, grid, grid);
-        ctx.fillStyle = 'rgba(255, 235, 59, 0.9)';
-        ctx.fillRect(e.c * grid + 10, e.r * grid + 10, grid - 20, grid - 20);
-        return true;
-      });
-
+      // Desenha os Jogadores
       ctx.font = '16px Courier New';
       Object.values(players).forEach(p => {
         if (!p.alive) return;
