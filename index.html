@@ -143,8 +143,8 @@
     const RESPAWN_DELAY_MS = 3000;
     const BASE_BOMB_RANGE = 2; 
     const POWERUP_SPAWN_CHANCE = 0.45;
-    const SHIELD_DURATION_MS = 5000;
-    const INVIS_DURATION_MS = 10000;
+    const SHIELD_DURATION_MS = 30000;
+    const INVIS_DURATION_MS = 30000;
 
     let serverTimeOffset = 0;
     db.ref('.info/serverTimeOffset').on('value', snap => {
@@ -591,10 +591,10 @@
           showEventMessage('+1 Bomba Extra! 💣');
         } else if (pu.type === 'shield') {
           db.ref(`rooms/${myRoom}/players/${myId}`).update({ shieldUntil: getServerTime() + SHIELD_DURATION_MS });
-          showEventMessage('Colete à prova de bomba! 🛡️ (5s)');
+          showEventMessage('Colete à prova de bomba! 🛡️ (30s)');
         } else if (pu.type === 'invis') {
           db.ref(`rooms/${myRoom}/players/${myId}`).update({ invisUntil: getServerTime() + INVIS_DURATION_MS });
-          showEventMessage('Você ficou invisível! 👻 (10s)');
+          showEventMessage('Você ficou invisível! 👻 (30s)');
         } else {
           // LÓGICA DE ALCANCE: Quanto mais pega, maior o range da explosão de forma infinita
           const currentRange = me.bombRange || BASE_BOMB_RANGE;
