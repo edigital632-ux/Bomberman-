@@ -633,10 +633,33 @@
 
         if (!existingData.map) generateHardMap(roomRef, 1);
 
-        const usedSlots = new Set(Object.values(existingPlayers).map(p => p.slot).filter(s => typeof s === 'number'));
+        // Remove jogadores "fantasma" — entradas no Firebase sem onDisconnect ativo
+        // (sessões encerradas abruptamente que deixaram dados órfãos).
+        // Um jogador é considerado fantasma se já existia ANTES de eu entrar e
+        // não atualizou o campo `lastSeen` nos últimos 15 segundos.
+        const nowMs = Date.now();
+        const cleanupPromises = Object.entries(existingPlayers).map(([pid, pd]) => {
+          const lastSeen = pd.lastSeen || 0;
+          const stale = (nowMs - lastSeen) > 15000; // mais de 15s sem heartbeat
+          if (stale) return db.ref(`rooms/${myRoom}/players/${pid}`).remove();
+          return Promise.resolve();
+        });
+        await Promise.all(cleanupPromises);
+
+        // Re-lê a sala após limpeza de fantasmas
+        const snapAfterClean = await roomRef.child('players').once('value');
+        const cleanPlayers = snapAfterClean.val() || {};
+        const cleanCount = Object.keys(cleanPlayers).length;
+        if (cleanCount >= 4) {
+          lobbyError.innerText = 'Sala cheia (Máximo 4 jogadores).';
+          joinBtn.disabled = false;
+          return;
+        }
+
+        const usedSlots = new Set(Object.values(cleanPlayers).map(p => p.slot).filter(s => typeof s === 'number'));
         let slot = 0;
         while (usedSlots.has(slot) && slot < 4) slot++;
-        if (slot >= 4) slot = existingCount % 4; 
+        if (slot >= 4) slot = cleanCount % 4;
 
         const spawn = SPAWNS[slot];
         const color = COLORS[slot];
@@ -645,9 +668,16 @@
         await myPlayerRef.set({
           name: myName, r: spawn.r, c: spawn.c, alive: true, color: color, slot: slot, 
           bombRange: BASE_BOMB_RANGE, maxBombs: 1, points: 0, team: null,
-          shieldUntil: 0, invisUntil: 0
+          shieldUntil: 0, invisUntil: 0, lastSeen: Date.now()
         });
         myPlayerRef.onDisconnect().remove();
+
+        // Heartbeat: atualiza lastSeen a cada 5s para não ser marcado como fantasma
+        setInterval(() => {
+          if (myId && myRoom) {
+            db.ref(`rooms/${myRoom}/players/${myId}/lastSeen`).set(Date.now());
+          }
+        }, 5000);
 
         roomRef.child('players').on('value', s => {
           const newPlayers = s.val() || {};
@@ -907,28 +937,19 @@
       const myMaxBombs = me.maxBombs || 1;
       if (myActiveBombs.length >= myMaxBombs) return;
 
-      // Determina a célula na frente do jogador (baseado no último movimento)
-      const facing = me.facing || 'right';
-      let br = me.r, bc = me.c;
-      if (facing === 'up') br = me.r - 1;
-      else if (facing === 'down') br = me.r + 1;
-      else if (facing === 'left') bc = me.c - 1;
-      else bc = me.c + 1;
-
-      // Se a frente estiver bloqueada ou já tiver bomba, coloca na própria célula
-      if (!map[br] || map[br][bc] === undefined || map[br][bc] !== ' ' || isBombAt(br, bc)) {
-        br = me.r; bc = me.c;
-      }
-      if (isBombAt(br, bc)) return;
+      const { r, c } = me;
+      if (isBombAt(r, c)) return;
 
       const bid = `b_${myId}_${Date.now()}`;
 
-      // Dispara animação de arremesso local
-      throwAnimations[myId] = { startTime: Date.now(), targetR: br, targetC: bc };
+      // Dispara animação visual de arremesso (apenas cosmética — a bomba fica na célula do jogador)
+      throwAnimations[myId] = { startTime: Date.now(), targetR: r, targetC: c };
 
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
-        r: br, c: bc, owner: myId, range: me.bombRange || BASE_BOMB_RANGE,
-        plantedAt: firebase.database.ServerValue.TIMESTAMP, state: 'ticking'
+        r, c, owner: myId,
+        range: me.bombRange || BASE_BOMB_RANGE,
+        plantedAt: firebase.database.ServerValue.TIMESTAMP,
+        state: 'ticking'
       });
     }
 
