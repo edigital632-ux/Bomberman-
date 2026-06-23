@@ -64,6 +64,14 @@
     #effects-status { font-size: 12px; min-height: 16px; margin-top: 2px; }
     .effect-shield { color: #29b6f6; }
     .effect-invis { color: #ab47bc; }
+
+    /* Botões de time */
+    #team-actions { display: none; flex-direction: column; gap: 6px; align-items: center; }
+    .btn-team-action { width: 80px; height: 38px; border-radius: 8px; border: 2px solid #fff; color: #fff; font-size: 12px; font-weight: bold; cursor: pointer; font-family: inherit; }
+    .btn-send-shield { background: #0288d1; }
+    .btn-send-shield:active { background: #29b6f6; }
+    .btn-send-bomb { background: #c62828; }
+    .btn-send-bomb:active { background: #ef5350; }
   </style>
 </head>
 <body>
@@ -117,7 +125,13 @@
       <div style="grid-column: 3; grid-row: 2" class="btn" id="right">▶</div>
       <div style="grid-column: 2; grid-row: 3" class="btn" id="down">▼</div>
     </div>
-    <div class="btn btn-bomb" id="bomb-btn">BOMBA</div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div class="btn btn-bomb" id="bomb-btn">BOMBA</div>
+      <div id="team-actions">
+        <button class="btn-team-action btn-send-shield" id="send-shield-btn">🛡️ Enviar</button>
+        <button class="btn-team-action btn-send-bomb" id="send-bomb-btn">💣 Enviar</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -176,18 +190,167 @@
     ];
     const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50']; 
 
-    // ---------- SPRITES PIXEL ART ORIGINAIS (criados do zero, sem copiar nenhuma arte existente) ----------
-    // Personagem com capacete colorido por slot, e tiles de cenário (parede de pedra / bloco de moita).
+    // ---------- CORES DOS PERSONAGENS POR SLOT ----------
+    // Cada slot tem uma paleta: [corPrincipal, corDetalhe]
+    // Branco é o padrão (slot 0), demais variam conforme a cor do nome do jogador.
+    const PLAYER_PALETTES = [
+      { body: '#ffffff', suit: '#3a5bbf', belt: '#f7c832', glove: '#f5b8c4', shoe: '#f5b8c4', visor: '#000000' }, // Branco/Azul (padrão)
+      { body: '#ff5252', suit: '#b71c1c', belt: '#f7c832', glove: '#ffab40', shoe: '#ffab40', visor: '#000000' }, // Vermelho
+      { body: '#ce93d8', suit: '#6a1b9a', belt: '#f7c832', glove: '#f48fb1', shoe: '#f48fb1', visor: '#000000' }, // Roxo
+      { body: '#a5d6a7', suit: '#2e7d32', belt: '#f7c832', glove: '#c8e6c9', shoe: '#c8e6c9', visor: '#000000' }, // Verde
+    ];
+
+    // Detecta qual paleta usar baseado na cor do jogador (ou slot)
+    function getPalette(slot) {
+      return PLAYER_PALETTES[slot % PLAYER_PALETTES.length];
+    }
+
+    // Desenha o Bomberman com SVG no canvas, baseado na imagem original
+    // O boneco tem capacete branco, roupa colorida, luvas e sapatos rosas
+    function drawBomberman(ctx, x, y, size, palette, throwing, facing) {
+      const s = size / 64; // escala relativa
+      ctx.save();
+      ctx.translate(x + size / 2, y + size / 2);
+      if (facing === 'left') ctx.scale(-1, 1);
+
+      // Pernas
+      ctx.fillStyle = palette.body;
+      // Perna esquerda
+      ctx.beginPath();
+      ctx.ellipse(-12 * s, 18 * s, 5 * s, 10 * s, -0.3, 0, Math.PI * 2);
+      ctx.fill();
+      // Perna direita
+      ctx.beginPath();
+      ctx.ellipse(12 * s, 18 * s, 5 * s, 10 * s, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Sapatos
+      ctx.fillStyle = palette.shoe;
+      ctx.beginPath();
+      ctx.ellipse(-14 * s, 26 * s, 8 * s, 5 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(14 * s, 26 * s, 8 * s, 5 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Corpo (macacão)
+      ctx.fillStyle = palette.suit;
+      ctx.beginPath();
+      ctx.ellipse(0, 8 * s, 15 * s, 16 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Cinto
+      ctx.fillStyle = palette.belt;
+      ctx.fillRect(-13 * s, 10 * s, 26 * s, 5 * s);
+      // Fivela
+      ctx.fillStyle = '#000';
+      ctx.fillRect(-4 * s, 11 * s, 8 * s, 3 * s);
+
+      // Braço esquerdo (normal ou levantado pra jogar)
+      ctx.fillStyle = palette.body;
+      if (throwing) {
+        // Braço direito levantado para jogar
+        ctx.beginPath();
+        ctx.ellipse(-16 * s, 2 * s, 5 * s, 9 * s, -0.2, 0, Math.PI * 2);
+        ctx.fill();
+        // Braço direito levantado
+        ctx.beginPath();
+        ctx.ellipse(18 * s, -8 * s, 5 * s, 9 * s, -0.7, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.ellipse(-18 * s, 4 * s, 5 * s, 9 * s, 0.3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(18 * s, 4 * s, 5 * s, 9 * s, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Luvas
+      ctx.fillStyle = palette.glove;
+      if (throwing) {
+        ctx.beginPath();
+        ctx.arc(-18 * s, 6 * s, 7 * s, 0, Math.PI * 2);
+        ctx.fill();
+        // Luva direita levantada com bomba
+        ctx.beginPath();
+        ctx.arc(21 * s, -14 * s, 7 * s, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(-22 * s, 8 * s, 7 * s, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(22 * s, 8 * s, 7 * s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Cabeça (capacete branco)
+      ctx.fillStyle = palette.body;
+      ctx.beginPath();
+      ctx.ellipse(0, -14 * s, 16 * s, 16 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Topo do capacete (bolinha)
+      ctx.fillStyle = palette.glove;
+      ctx.beginPath();
+      ctx.arc(0, -28 * s, 6 * s, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Viseira preta (máscara dos olhos)
+      ctx.fillStyle = palette.visor;
+      ctx.beginPath();
+      ctx.moveTo(-14 * s, -18 * s);
+      ctx.lineTo(14 * s, -18 * s);
+      ctx.lineTo(14 * s, -10 * s);
+      ctx.lineTo(-14 * s, -10 * s);
+      ctx.closePath();
+      ctx.fill();
+
+      // Faixa central da viseira (nariz)
+      ctx.fillStyle = palette.body;
+      ctx.beginPath();
+      ctx.moveTo(-2 * s, -18 * s);
+      ctx.lineTo(2 * s, -18 * s);
+      ctx.lineTo(2 * s, -10 * s);
+      ctx.lineTo(-2 * s, -10 * s);
+      ctx.closePath();
+      ctx.fill();
+
+      // Bomba na mão direita quando não está jogando
+      if (!throwing) {
+        // Bomba preta
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(24 * s, 4 * s, 8 * s, 0, Math.PI * 2);
+        ctx.fill();
+        // Pavio
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 2 * s;
+        ctx.beginPath();
+        ctx.moveTo(24 * s, -4 * s);
+        ctx.quadraticCurveTo(30 * s, -10 * s, 28 * s, -15 * s);
+        ctx.stroke();
+        // Faísca
+        ctx.fillStyle = '#ffeb3b';
+        ctx.beginPath();
+        ctx.arc(28 * s, -16 * s, 3 * s, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#f44336';
+        ctx.beginPath();
+        ctx.arc(30 * s, -18 * s, 2 * s, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    // Sprites de tiles (mantidos os originais)
     const SPRITE_DATA = {
-      p1_white_blue: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABcklEQVR4nO1WTUoDMRT+KmYpb5BxU4SidCOCx5huXHgOb+AJvIHncOFmeoyCuCkVQdw4yAQPMC40Jc3kJS9pi5v5YJgheXnf936SDDBgwD9jlLOIiDpuTmud5DPJ2BAv3z5Ym+lknCTkYJfk9nwoSzZEKomoixH7MJ2Mo5mIZkAaSe56UQlyopeuCwrITb0rIpQFcRPuC4OAQ27CrZs5YFJg9w8Rdb4tyQpw0b7UAICTq2sAwOfiaWPeN94I/HoFnD18b7X3XRzfv/++ge719mgjC72UcOSrm+dk4vPHS++4LUJcguJilizARB6CWIDEWQ5629Ct0a4R7QEbRNRxkX/dnfbGQrbcrSgugQ9t266/i6LI8hE8CbXWI1+kNql5OISiB2Q/JBUR1TlN+Ec+AzDnbER3gVLKW/MYuVIqaifuAVtEKBvGRkIuEVC5ImwSHxjiCkwZYgLmrgibpGma9fFYlmUd8eOFqAkFNjFs14T7xA/t7X4d6cKAqwAAAABJRU5ErkJggg==",
-      p2_red_black: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABb0lEQVR4nO1WvU7DMBC+IjxfhjBk61oJ6AswdUiFxMrOxjPxHkgonXmBAlLXbh7IEI+dzEKiq+Ozz6YVSz4pUmSf7/vuxz8AEyb8M2Y5ixDRcnPGmCSflznEVVWFzGyKkIsTkw/zoSxRiFQioo0R+6C1jmYimgFpJLnrRSXIiV66LiggN/WuiFAWxE14LkwC2IPIrZvWOtk57R9EtL4tKT4Ju10DAABXtw8AAPD98Xo07xtfrJ6ifr0CPpfLIfrHw0GqkcX7fN7/2pvt9igLo5RQcorrt5dk4q/7Z+84FSEuQbFYJwsgkbMQC5A4y8FoG7o1OjWiPUCBiJaL/G6/H42FbLlbMelB4qLruuG/KIosH8GT0Bgz80VKSfuPQyh6ANmDpEbEJqcJf8nXALDhbER3gVLKW/MYuVIqaifuASoilI3eRkIuEVC7IiiJDwxxDUwZYgI2rghK0rbtcDyWZdlE/HghakKBTQx/a8Jz4genVnLL75jYqwAAAABJRU5ErkJggg==",
-      p3_purple_yellow: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABf0lEQVR4nO1WMU7EMBCcQ7jeFEHKDxAND7gKmruGgh9QwA94BBU/ACF+QHFNruEqHkCD+MFJRCKuU4QCfDjJ2l6bO9FkpJMie70zO7txDhgx4p8xSTlERK1rT2sdlTMq2BDXLyfOmGy6ihKyt01ye9/nkg2RSiJqQ8Qcsukq6ETQAWklqedFLUipXnrOKyDV+r4InwviIdwVRgH7ro1+38wFEwN7foio5V5Jp4BBsrcSAHBwfAYA+HhddPbZ9c+bYF5WwN3hk1X9g1SjE7fF4/dDgfbq/bzjwsCSLvkvLp+LaOL70zW7bosQtyA7mkcL2FTugViAJFkKBq9hv0fbRnAGbBBR66r8en0xWPPFur6K4hZwqOt685xlWVIO702otZ5wldqk5ueCr3pA9odkRkRlyhD+kM8BLF0xom+BUorteYhcKRWME8+ALcLnhomRkAPhFswAIM/z0l5smsYr1EZVVeYGY9sQcmBpRHAkVvKBSCYPC9EQCmJC+NsQ7hJfSQ2BMKrM/eIAAAAASUVORK5CYII=",
-      p4_green_white: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABZElEQVR4nO2WPU7DQBCFXxBbjwtzCBpaKgqapAkS3IBjcASOwQ1AIo3TUFDR0nAIXHhrF6Zh0STe2ZndOKLxJ0WKdmd33vx4bGBm5p9ZlBwiokHa895n3ZllHBx3XSfaVFWVJeRkSud8P5WlbIhoKMEiQs3AoZFo500l0NI+9bk/SlOfUwpzEx6LWcCptLFftzBgcuBNSERDbDiJAkaXfTUAgLOLNQDg+3Ozsy+ta0QFrJ9vp5tiAK6ersPfYXP3spOFUUok56+XD9mObz4eo+tchLkE1fkqWwCLXMQswHJZCaPHcL9GU6P2AIeIBiny9/u30VrKVvo+MJcgBn/OS+YEoExC7/0iFil3Gn4SqegB2yfZkoiakib8db4CsJVsTO8C51y05ppz55xqZ+4BLiKVjWBjcQ7oJVgCQF3XDV/s+z4plNO2bZhg0TJoGdgGETEn7PKRyMg9UUxNaLDROKwJj8kP20bx/Ff51ZkAAAAASUVORK5CYII=",
       wall: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAlklEQVR4nO2Xuw2AMAxED+Q5PARkBiQa9mEClgOG8CJQ0AQUPgoCN3ddolh+in35FE3bLXCUVHWAqvYeyc1sKD0Sx5J4YGbDccE8jajqkJ3gLt59BwjgDiDzNEJVAWwNk9LZ/FNdxe9ckNPtb13iXgICEMAdYGfDXL+/OSck9nDKz7wNCUCAr8X3gHsJCEAAAdJ/wr+0AgZVOj9xHN3wAAAAAElFTkSuQmCC",
       block: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABmElEQVR4nMWXMW7DMAxFmaIHSLRkT4EOPoEHLz1H154gB/EJuvYcXTLkBBoKtLsX2TdIl0qhGFKk1KImYDiGFP9nkqKoDQBcYEW7W1McAOA+/ujHgZ2w3e9gmebqFwcfwHVOHD8fTzkAFZWeSzDBB/FZgrkJARW3jlNx63gGoInXzrNYdRIu08yGoRTvPwPQklGD4MKQADS3LtMM5+PpuThJgeDGEkDp67D4byFEAM36cXjDd84scM0AVvF4p14w1QEuDNYqyHnIdS5dkt14gApyySm5uuQhM0CEkNZ7TTI2AwBc1yyFkJKxFWgDP/1APw5sobAsKSxuDUPcDZMHpM0i+KB+XWmJbve77KKmLsOPV2+KORYvzaUQKsDjS6cWIGyWJMUQpkIUISQxbDgclm27uScsfWlNPTAD0CTV9gZr01LlgeBDBsKJBx+qOqbUlLrOqX0dFin97+v9Ew5PD3UA8WVYhD5rMNGs4gCFELT2eBbD5f3fT0Z0b2EPJpxZc8R1LhPRTlZVHtDCwo1rDU3aDdey1U/H35bf2Tr3H9cuAAAAAElFTkSuQmCC",
     };
 
-    // Carrega as imagens dos sprites em memória (decodifica o base64 uma única vez)
     const SPRITE_IMAGES = {};
     let spritesLoadedCount = 0;
     const SPRITE_KEYS = Object.keys(SPRITE_DATA);
@@ -197,21 +360,25 @@
       img.src = SPRITE_DATA[key];
       SPRITE_IMAGES[key] = img;
     });
-    const PLAYER_SPRITE_BY_SLOT = ['p1_white_blue', 'p2_red_black', 'p3_purple_yellow', 'p4_green_white'];
 
-    // Canvas auxiliar (offscreen) usado para tingir a parede com a cor da fase atual,
-    // preservando a textura de pedra do sprite e a variação de cor por fase pedida anteriormente.
+    // Animação de arremesso: guarda quando cada jogador jogou a bomba
+    const throwAnimations = {}; // { playerId: { startTime, targetR, targetC } }
+    const THROW_ANIM_MS = 400; // duração da animação de arremesso
+
+    // Canvas auxiliar (offscreen) para tingir a parede com a cor da fase atual
     const tintCanvas = document.createElement('canvas');
     tintCanvas.width = 32; tintCanvas.height = 32;
     const tintCtx = tintCanvas.getContext('2d');
     function getTintedWallTile(color) {
+      const wallImg = SPRITE_IMAGES.wall;
+      if (!wallImg || !wallImg.complete) return null;
       tintCtx.clearRect(0, 0, 32, 32);
-      tintCtx.drawImage(SPRITE_IMAGES.wall, 0, 0, 32, 32);
+      tintCtx.drawImage(wallImg, 0, 0, 32, 32);
       tintCtx.globalCompositeOperation = 'multiply';
       tintCtx.fillStyle = color;
       tintCtx.fillRect(0, 0, 32, 32);
       tintCtx.globalCompositeOperation = 'destination-in';
-      tintCtx.drawImage(SPRITE_IMAGES.wall, 0, 0, 32, 32);
+      tintCtx.drawImage(wallImg, 0, 0, 32, 32);
       tintCtx.globalCompositeOperation = 'source-over';
       return tintCanvas;
     }
@@ -341,6 +508,48 @@
       db.ref(`rooms/${myRoom}/players/${otherId}`).update({ team: teamName });
     }
 
+    // ---------- PRESENTES DE DUPLA ----------
+    // Envia escudo pro parceiro de dupla
+    function sendShieldToTeammate() {
+      const me = players[myId];
+      if (!me || !me.team || !gameActive) return;
+      if (!me.shieldUntil || me.shieldUntil <= getServerTime()) {
+        showEventMessage('Você não tem escudo para enviar!'); return;
+      }
+      const teammateId = Object.keys(players).find(pid => pid !== myId && players[pid].team === me.team);
+      if (!teammateId) return;
+      // Transfere o escudo: tira de mim e passa ao parceiro
+      const remaining = me.shieldUntil - getServerTime();
+      if (remaining <= 0) { showEventMessage('Seu escudo já acabou!'); return; }
+      db.ref(`rooms/${myRoom}/players/${myId}`).update({ shieldUntil: 0 });
+      db.ref(`rooms/${myRoom}/players/${teammateId}`).update({ shieldUntil: getServerTime() + remaining });
+      showEventMessage(`🛡️ Escudo enviado para ${players[teammateId].name}!`);
+    }
+
+    // Envia bomba extra pro parceiro (subtrai 1 do próprio maxBombs e adiciona ao parceiro)
+    function sendBombToTeammate() {
+      const me = players[myId];
+      if (!me || !me.team || !gameActive) return;
+      const myMax = me.maxBombs || 1;
+      if (myMax <= 1) { showEventMessage('Você não tem bombas extras para enviar!'); return; }
+      const teammateId = Object.keys(players).find(pid => pid !== myId && players[pid].team === me.team);
+      if (!teammateId) { showEventMessage('Parceiro não encontrado!'); return; }
+      const mateMax = players[teammateId].maxBombs || 1;
+      db.ref(`rooms/${myRoom}/players/${myId}`).update({ maxBombs: myMax - 1 });
+      db.ref(`rooms/${myRoom}/players/${teammateId}`).update({ maxBombs: mateMax + 1 });
+      showEventMessage(`💣 Bomba enviada para ${players[teammateId].name}!`);
+    }
+
+    // Atualiza visibilidade dos botões de dupla
+    function updateTeamActionButtons() {
+      const me = players[myId];
+      const actionsDiv = document.getElementById('team-actions');
+      if (!me || !me.team || !gameActive) {
+        actionsDiv.style.display = 'none'; return;
+      }
+      actionsDiv.style.display = 'flex';
+    }
+
     // ---------- CHAT (visível para a sala toda, colorido por time/jogador) ----------
     // Mensagens aparecem como num chat de jogo normal: ficam visíveis por um tempo e depois somem (fade out),
     // em vez de se acumularem fixas na tela.
@@ -444,7 +653,8 @@
           const newPlayers = s.val() || {};
           detectPlayerEvents(newPlayers);
           players = newPlayers;
-          updateScoreboard(); 
+          updateScoreboard();
+          updateTeamActionButtons();
           
           const count = Object.keys(players).length;
           gameActive = count >= 2;
@@ -544,6 +754,27 @@
           showEventMessage(`${leftName} saiu da sala`);
         }
       });
+
+      // Detecta presentes recebidos de parceiro de dupla
+      const me = newPlayers[myId];
+      const oldMe = players[myId];
+      if (me && oldMe) {
+        const now = getServerTime();
+        // Recebeu escudo
+        if ((me.shieldUntil || 0) > (oldMe.shieldUntil || 0) && (me.shieldUntil || 0) > now) {
+          // Verifica se foi o parceiro que enviou (oldMe não tinha escudo)
+          if (!(oldMe.shieldUntil && oldMe.shieldUntil > now)) {
+            showEventMessage('🛡️ Seu parceiro te enviou um escudo!');
+          }
+        }
+        // Recebeu bomba extra
+        if ((me.maxBombs || 1) > (oldMe.maxBombs || 1)) {
+          if (oldMe.maxBombs !== undefined) {
+            showEventMessage('💣 Seu parceiro te enviou uma bomba extra!');
+          }
+        }
+      }
+
       knownPlayerIds = newIds;
     }
 
@@ -635,9 +866,15 @@
       if (!gameActive || !me || !me.alive) return;
       const nr = me.r + dr, nc = me.c + dc;
       if (!map || !map[nr] || map[nr][nc] !== ' ') return;
-      if (isBombAt(nr, nc)) return; 
+      if (isBombAt(nr, nc)) return;
 
-      db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc });
+      let facing = me.facing || 'right';
+      if (dr === -1) facing = 'up';
+      else if (dr === 1) facing = 'down';
+      else if (dc === -1) facing = 'left';
+      else if (dc === 1) facing = 'right';
+
+      db.ref(`rooms/${myRoom}/players/${myId}`).update({ r: nr, c: nc, facing });
 
       const pid = `pu_${nr}_${nc}`;
       const pu = powerups[pid];
@@ -665,18 +902,33 @@
     function placeBomb() {
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
-      const { r, c } = me;
-      const bid = `b_${myId}_${Date.now()}`;
-      
-      if (isBombAt(r, c)) return; 
 
       const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking');
-      const myMaxBombs = me.maxBombs || 1; 
-
+      const myMaxBombs = me.maxBombs || 1;
       if (myActiveBombs.length >= myMaxBombs) return;
 
+      // Determina a célula na frente do jogador (baseado no último movimento)
+      const facing = me.facing || 'right';
+      let br = me.r, bc = me.c;
+      if (facing === 'up') br = me.r - 1;
+      else if (facing === 'down') br = me.r + 1;
+      else if (facing === 'left') bc = me.c - 1;
+      else bc = me.c + 1;
+
+      // Se a frente estiver bloqueada ou já tiver bomba, coloca na própria célula
+      if (!map[br] || map[br][bc] === undefined || map[br][bc] !== ' ' || isBombAt(br, bc)) {
+        br = me.r; bc = me.c;
+      }
+      if (isBombAt(br, bc)) return;
+
+      const bid = `b_${myId}_${Date.now()}`;
+
+      // Dispara animação de arremesso local
+      throwAnimations[myId] = { startTime: Date.now(), targetR: br, targetC: bc };
+
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
-        r, c, owner: myId, range: me.bombRange || BASE_BOMB_RANGE, plantedAt: firebase.database.ServerValue.TIMESTAMP, state: 'ticking'
+        r: br, c: bc, owner: myId, range: me.bombRange || BASE_BOMB_RANGE,
+        plantedAt: firebase.database.ServerValue.TIMESTAMP, state: 'ticking'
       });
     }
 
@@ -775,21 +1027,22 @@
 
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          if (map[r] && map[r][c] === 'W') { 
-              if (spritesLoadedCount >= SPRITE_KEYS.length) {
-                const tinted = getTintedWallTile(visual.wall);
+          if (map[r] && map[r][c] === 'W') {
+              const tinted = getTintedWallTile(visual.wall);
+              if (tinted) {
                 ctx.drawImage(tinted, c * grid, r * grid, grid, grid);
               } else {
-                ctx.fillStyle = visual.wall; 
-                ctx.fillRect(c * grid, r * grid, grid, grid); 
+                ctx.fillStyle = visual.wall;
+                ctx.fillRect(c * grid, r * grid, grid, grid);
               }
           }
-          else if (map[r] && map[r][c] === 'S') { 
-              if (spritesLoadedCount >= SPRITE_KEYS.length) {
-                ctx.drawImage(SPRITE_IMAGES.block, c * grid + 2, r * grid + 2, grid - 4, grid - 4);
+          else if (map[r] && map[r][c] === 'S') {
+              const blockImg = SPRITE_IMAGES.block;
+              if (blockImg && blockImg.complete) {
+                ctx.drawImage(blockImg, c * grid + 2, r * grid + 2, grid - 4, grid - 4);
               } else {
-                ctx.fillStyle = BLOCK_COLOR; 
-                ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); 
+                ctx.fillStyle = BLOCK_COLOR;
+                ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4);
               }
           }
         }
@@ -845,13 +1098,43 @@
         }
       });
 
+      // Desenha bombas voando (animação de arremesso)
+      const localNow = Date.now();
+      Object.entries(throwAnimations).forEach(([pid, anim]) => {
+        const elapsed = localNow - anim.startTime;
+        if (elapsed > THROW_ANIM_MS) { delete throwAnimations[pid]; return; }
+        const p = players[pid];
+        if (!p) return;
+        const t = elapsed / THROW_ANIM_MS;
+        const startX = (p.c + 0.5) * grid;
+        const startY = (p.r + 0.5) * grid;
+        const endX = (anim.targetC + 0.5) * grid;
+        const endY = (anim.targetR + 0.5) * grid;
+        const bx = startX + (endX - startX) * t;
+        const by = startY + (endY - startY) * t - Math.sin(t * Math.PI) * grid * 0.8;
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(bx, by, 10, 0, Math.PI * 2);
+        ctx.fill();
+        // Pavio
+        ctx.strokeStyle = '#aaa';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(bx, by - 10);
+        ctx.lineTo(bx + 5, by - 18);
+        ctx.stroke();
+        ctx.fillStyle = '#ffeb3b';
+        ctx.beginPath();
+        ctx.arc(bx + 5, by - 19, 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
       ctx.font = '16px Courier New';
-      Object.values(players).forEach(p => {
+      Object.entries(players).forEach(([pid, p]) => {
         if (!p.alive) return;
 
-        const isMe = (p === players[myId]);
+        const isMe = (pid === myId);
         const invisActive = p.invisUntil && p.invisUntil > serverNow;
-        // Jogador invisível só permanece visível para si mesmo (semi-transparente); para os demais, desaparece.
         if (invisActive && !isMe) return;
 
         const shielded = p.shieldUntil && p.shieldUntil > serverNow;
@@ -863,24 +1146,20 @@
           ctx.strokeStyle = '#00e5ff';
           ctx.lineWidth = 4;
           ctx.beginPath();
-          ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.42, 0, Math.PI * 2);
+          ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.46, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        const spriteKey = PLAYER_SPRITE_BY_SLOT[p.slot] || PLAYER_SPRITE_BY_SLOT[0];
-        const sprite = SPRITE_IMAGES[spriteKey];
-        if (sprite && spritesLoadedCount >= SPRITE_KEYS.length) {
-          ctx.drawImage(sprite, p.c * grid + 4, p.r * grid + 2, grid - 8, grid - 8);
-        } else {
-          // Fallback enquanto o sprite carrega: círculo de cor sólida (comportamento antigo)
-          ctx.fillStyle = p.color;
-          ctx.beginPath();
-          ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.35, 0, Math.PI * 2);
-          ctx.fill();
-        }
+        const palette = getPalette(p.slot || 0);
+        const isThowing = throwAnimations[pid] && (localNow - throwAnimations[pid].startTime) < THROW_ANIM_MS / 2;
+        const facing = p.facing || 'right';
+        drawBomberman(ctx, p.c * grid, p.r * grid, grid, palette, isThowing, facing);
 
         ctx.fillStyle = '#fff';
-        ctx.fillText(p.name, p.c * grid + 10, p.r * grid);
+        ctx.font = 'bold 13px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.name, (p.c + 0.5) * grid, p.r * grid - 2);
+        ctx.textAlign = 'left';
         ctx.restore();
       });
 
@@ -889,6 +1168,7 @@
 
     const bind = (id, f) => {
       const el = document.getElementById(id);
+      if (!el) return;
       el.addEventListener('touchstart', e => { e.preventDefault(); f(); });
       el.addEventListener('mousedown', f);
     };
@@ -897,6 +1177,8 @@
     bind('left', () => move(0, -1));
     bind('right', () => move(0, 1));
     bind('bomb-btn', placeBomb);
+    bind('send-shield-btn', sendShieldToTeammate);
+    bind('send-bomb-btn', sendBombToTeammate);
 
     document.addEventListener('keydown', e => {
       if (document.activeElement && document.activeElement.id === 'chat-input') return;
@@ -905,6 +1187,8 @@
       if (e.key === 'ArrowLeft') move(0, -1);
       if (e.key === 'ArrowRight') move(0, 1);
       if (e.key === ' ') placeBomb();
+      if (e.key === 'q' || e.key === 'Q') sendShieldToTeammate();
+      if (e.key === 'e' || e.key === 'E') sendBombToTeammate();
     });
   </script>
 </body>
