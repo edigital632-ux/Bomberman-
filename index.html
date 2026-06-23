@@ -72,6 +72,12 @@
     .btn-send-shield:active { background: #29b6f6; }
     .btn-send-bomb { background: #c62828; }
     .btn-send-bomb:active { background: #ef5350; }
+
+    /* Botão Detonar mina */
+    #detonate-btn { display: none; width: 90px; height: 90px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #ff6f00, #b71c1c); border: 4px solid #ffeb3b; color: #fff; font-size: 13px; font-weight: bold; cursor: pointer; font-family: inherit; text-align: center; line-height: 1.2; box-shadow: 0 0 18px #ff6f00; animation: pulse-detonate 0.8s infinite alternate; }
+    #detonate-btn:active { transform: scale(0.93); }
+    @keyframes pulse-detonate { from { box-shadow: 0 0 12px #ff6f00; } to { box-shadow: 0 0 28px #ffeb3b, 0 0 6px #fff; } }
+    #mine-count { font-size: 11px; color: #ff8f00; min-height: 14px; text-align: center; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -127,10 +133,14 @@
     </div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
       <div class="btn btn-bomb" id="bomb-btn">BOMBA</div>
+      <div id="mine-count"></div>
       <div id="team-actions">
         <button class="btn-team-action btn-send-shield" id="send-shield-btn">🛡️ Enviar</button>
         <button class="btn-team-action btn-send-bomb" id="send-bomb-btn">💣 Enviar</button>
       </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+      <button id="detonate-btn">💥<br>DETONAR</button>
     </div>
   </div>
 
@@ -164,6 +174,11 @@
     db.ref('.info/serverTimeOffset').on('value', snap => {
       serverTimeOffset = snap.val() || 0;
     });
+
+    // Estado local das minas armadas pelo jogador (invisíveis para adversários)
+    // { mineId: { r, c, range, bid } }  — bid = id da bomba no Firebase
+    let myArmedMines = {};    // minas que EU armei (só eu enxergo)
+    let myMineCount = 0;      // quantas minas tenho no inventário
 
     function getServerTime() {
       return Date.now() + serverTimeOffset;
@@ -830,7 +845,11 @@
       ref.child('phase').set(phaseNum);
       ref.child('bombs').remove();
       ref.child('powerups').remove();
-      localExplodedBombs.clear(); 
+      localExplodedBombs.clear();
+      // Limpa minas locais ao iniciar nova fase
+      myArmedMines = {};
+      myMineCount = 0;
+      updateMineUI(); 
     }
 
     function startNextPhase() {
@@ -919,6 +938,10 @@
         } else if (pu.type === 'invis') {
           db.ref(`rooms/${myRoom}/players/${myId}`).update({ invisUntil: getServerTime() + INVIS_DURATION_MS });
           showEventMessage('Você ficou invisível! 👻 (30s)');
+        } else if (pu.type === 'mine') {
+          myMineCount += 1;
+          updateMineUI();
+          showEventMessage('🎯 Mina armadilha! Arme com BOMBA e detone quando quiser!');
         } else {
           // LÓGICA DE ALCANCE: Quanto mais pega, maior o range da explosão de forma infinita
           const currentRange = me.bombRange || BASE_BOMB_RANGE;
@@ -933,6 +956,12 @@
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
 
+      // Se tem mina no inventário, arma uma mina em vez de bomba normal
+      if (myMineCount > 0) {
+        placeMine();
+        return;
+      }
+
       const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking');
       const myMaxBombs = me.maxBombs || 1;
       if (myActiveBombs.length >= myMaxBombs) return;
@@ -941,8 +970,6 @@
       if (isBombAt(r, c)) return;
 
       const bid = `b_${myId}_${Date.now()}`;
-
-      // Dispara animação visual de arremesso (apenas cosmética — a bomba fica na célula do jogador)
       throwAnimations[myId] = { startTime: Date.now(), targetR: r, targetC: c };
 
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
@@ -953,13 +980,81 @@
       });
     }
 
+    // Arma uma mina invisível na posição atual do jogador.
+    // A mina é registrada no Firebase com flag `hidden:true` — o cliente dos adversários
+    // ignora bombas hidden que não são deles, portanto eles não a enxergam.
+    function placeMine() {
+      const me = players[myId];
+      if (!me || !me.alive || myMineCount <= 0) return;
+
+      const { r, c } = me;
+      // Não permite armar sobre outra mina/bomba
+      if (isBombAt(r, c)) { showEventMessage('Já tem uma bomba neste local!'); return; }
+      const alreadyMineHere = Object.values(myArmedMines).some(m => m.r === r && m.c === c);
+      if (alreadyMineHere) { showEventMessage('Já tem uma mina neste local!'); return; }
+
+      const bid = `mine_${myId}_${Date.now()}`;
+      myMineCount -= 1;
+
+      // Arma a bomba no Firebase com hidden:true e sem plantedAt (não explode sozinha)
+      db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
+        r, c, owner: myId,
+        range: me.bombRange || BASE_BOMB_RANGE,
+        plantedAt: 0,          // zero = não conta temporizador automático
+        state: 'ticking',
+        hidden: true            // flag: adversários não renderizam
+      });
+
+      // Registra localmente
+      myArmedMines[bid] = { r, c, range: me.bombRange || BASE_BOMB_RANGE, bid };
+      updateMineUI();
+      showEventMessage('🎯 Mina armada! Aguarde e pressione DETONAR!');
+    }
+
+    // Explode todas as minas armadas pelo jogador de uma vez (detonação remota)
+    function detonateMines() {
+      const mineIds = Object.keys(myArmedMines);
+      if (mineIds.length === 0) { showEventMessage('Nenhuma mina armada!'); return; }
+
+      mineIds.forEach(bid => {
+        const mine = myArmedMines[bid];
+        const b = bombs[bid];
+        if (!b) { delete myArmedMines[bid]; return; }
+        // Dispara explosão imediata: muda state para ticking com plantedAt no passado
+        // para que triggerExplosion seja chamado imediatamente no próximo tickBombs
+        db.ref(`rooms/${myRoom}/bombs/${bid}`).update({
+          plantedAt: getServerTime() - BOMB_FUSE_MS - 100,
+          hidden: false   // agora fica visível para todos (já explodindo)
+        });
+        delete myArmedMines[bid];
+      });
+
+      updateMineUI();
+      showEventMessage('💥 DETONADO!');
+    }
+
+    // Atualiza o botão detonar e o contador de minas
+    function updateMineUI() {
+      const detonateBtn = document.getElementById('detonate-btn');
+      const mineCountEl = document.getElementById('mine-count');
+      const hasArmed = Object.keys(myArmedMines).length > 0;
+      detonateBtn.style.display = hasArmed ? 'block' : 'none';
+      if (myMineCount > 0) {
+        mineCountEl.textContent = `🎯 Minas: ${myMineCount}`;
+      } else {
+        mineCountEl.textContent = '';
+      }
+    }
+
     function tickBombs() {
       const serverNow = getServerTime(); 
       const me = players[myId];
       if (!me) return;
 
       Object.entries(bombs).forEach(([bid, b]) => {
-        if (!b.plantedAt) return; 
+        if (!b.plantedAt) return;
+        // Mina com plantedAt=0 = aguardando detonação manual, não conta temporizador
+        if (b.hidden && b.plantedAt === 0) return; 
         
         const ids = Object.keys(players).sort();
         const responsible = players[b.owner] ? b.owner : ids[0];
@@ -1023,8 +1118,9 @@
     // e adiciona uma chance menor para os itens especiais (colete e invisibilidade).
     function pickPowerupType() {
       const roll = Math.random();
-      if (roll < 0.15) return 'shield';
-      if (roll < 0.25) return 'invis';
+      if (roll < 0.12) return 'shield';
+      if (roll < 0.22) return 'invis';
+      if (roll < 0.35) return 'mine';   // ~13% de chance de aparecer mina armadilha
       powerupAlternator = powerupAlternator === 'range' ? 'amount' : 'range';
       return powerupAlternator;
     }
@@ -1034,6 +1130,11 @@
         if (!newBombs[bid]) {
             processedBombIds.delete(bid);
             localExplodedBombs.delete(bid);
+            // Remove mina do inventário local se foi removida do Firebase
+            if (myArmedMines[bid]) {
+              delete myArmedMines[bid];
+              updateMineUI();
+            }
         }
       });
     }
@@ -1077,6 +1178,7 @@
         if (p.type === 'amount') { color = '#29b6f6'; icon = '💣'; }
         else if (p.type === 'shield') { color = '#00e5ff'; icon = '🛡️'; }
         else if (p.type === 'invis') { color = '#ab47bc'; icon = '👻'; }
+        else if (p.type === 'mine') { color = '#ff8f00'; icon = '🎯'; }
 
         ctx.fillStyle = color;
         ctx.beginPath();
@@ -1089,9 +1191,36 @@
         ctx.textAlign = 'left';
       });
 
+      // Desenha minas armadas — só visível para quem armou (renderizado localmente)
+      Object.values(myArmedMines).forEach(mine => {
+        const mx = (mine.c + 0.5) * grid;
+        const my = (mine.r + 0.5) * grid;
+        // Círculo pulsante laranja (só o dono vê)
+        const minePulse = 0.7 + 0.3 * Math.sin(Date.now() / 150);
+        ctx.save();
+        ctx.globalAlpha = 0.6 + 0.3 * minePulse;
+        ctx.fillStyle = '#ff6f00';
+        ctx.beginPath();
+        ctx.arc(mx, my, grid * 0.22 * minePulse, 0, Math.PI * 2);
+        ctx.fill();
+        // Ícone pequeno
+        ctx.font = 'bold 18px Courier New';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff';
+        ctx.fillText('💣', mx, my + 7);
+        // Texto "MINA" pequeno
+        ctx.font = 'bold 10px Courier New';
+        ctx.fillStyle = '#ffeb3b';
+        ctx.fillText('MINA', mx, my - 14);
+        ctx.restore();
+      });
+
       const serverNow = getServerTime(); 
       
       Object.entries(bombs).forEach(([bid, b]) => {
+        // Minas ocultas: só o dono as enxerga (renderização feita separadamente via myArmedMines)
+        if (b.hidden && b.owner !== myId) return;
+
         if (b.state === 'exploding' && b.hitCells) {
             b.hitCells.forEach(cell => {
                 ctx.fillStyle = FIRE_OUTER;
@@ -1200,6 +1329,7 @@
     bind('bomb-btn', placeBomb);
     bind('send-shield-btn', sendShieldToTeammate);
     bind('send-bomb-btn', sendBombToTeammate);
+    bind('detonate-btn', detonateMines);
 
     document.addEventListener('keydown', e => {
       if (document.activeElement && document.activeElement.id === 'chat-input') return;
@@ -1208,6 +1338,7 @@
       if (e.key === 'ArrowLeft') move(0, -1);
       if (e.key === 'ArrowRight') move(0, 1);
       if (e.key === ' ') placeBomb();
+      if (e.key === 'f' || e.key === 'F') detonateMines();
       if (e.key === 'q' || e.key === 'Q') sendShieldToTeammate();
       if (e.key === 'e' || e.key === 'E') sendBombToTeammate();
     });
