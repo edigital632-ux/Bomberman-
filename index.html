@@ -989,13 +989,55 @@
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
 
-      // Sempre coloca bomba normal, independente de ter minas no inventário
       const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking' && !b.hidden);
       const myMaxBombs = me.maxBombs || 1;
       if (myActiveBombs.length >= myMaxBombs) return;
 
       const { r, c } = me;
       if (isBombAt(r, c)) return;
+
+      // Pede código secreto antes de plantar
+      showBombCodePicker(r, c);
+    }
+
+    function showBombCodePicker(r, c) {
+      if (document.getElementById('bomb-code-overlay')) return;
+      const overlay = document.createElement('div');
+      overlay.id = 'bomb-code-overlay';
+      overlay.style.cssText = `
+        position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:300;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        font-family:'Courier New',monospace;color:#fff;gap:18px;
+      `;
+      overlay.innerHTML = `
+        <div style="font-size:20px;font-weight:bold;color:#ff5252;">💣 ESCOLHA O CÓDIGO DA BOMBA</div>
+        <div style="font-size:13px;color:#ffeb3b;text-align:center;max-width:300px;line-height:1.6;">
+          O adversário vai ver os botões <b>1 a 5</b> para tentar desarmar.<br>
+          Se ele <b>acertar</b> o código → bomba desarmada.<br>
+          Se ele <b>errar</b> → <span style="color:#ff5252">EXPLODE na hora!</span>
+        </div>
+        <div style="display:flex;gap:14px;">
+          ${[1,2,3,4,5].map(n=>`
+            <button onclick="confirmBombCode(${n},${r},${c})" style="
+              width:58px;height:58px;border-radius:10px;border:3px solid #ff5252;
+              background:#1a0000;color:#fff;font-size:26px;font-weight:bold;cursor:pointer;
+              font-family:inherit;transition:background 0.15s;
+            " onmouseover="this.style.background='#4a0000'" onmouseout="this.style.background='#1a0000'">${n}</button>
+          `).join('')}
+        </div>
+        <button onclick="cancelBombCode()" style="
+          background:#333;color:#aaa;border:1px solid #666;border-radius:6px;
+          padding:8px 22px;cursor:pointer;font-family:inherit;font-size:12px;
+        ">Cancelar</button>
+      `;
+      document.body.appendChild(overlay);
+    }
+
+    window.confirmBombCode = function(code, r, c) {
+      const overlay = document.getElementById('bomb-code-overlay');
+      if (overlay) overlay.remove();
+      const me = players[myId];
+      if (!me || !me.alive) return;
 
       const bid = `b_${myId}_${Date.now()}`;
       throwAnimations[myId] = { startTime: Date.now(), targetR: r, targetC: c };
@@ -1004,9 +1046,15 @@
         r, c, owner: myId,
         range: me.bombRange || BASE_BOMB_RANGE,
         plantedAt: firebase.database.ServerValue.TIMESTAMP,
-        state: 'ticking'
+        state: 'ticking',
+        disarmCode: code   // código secreto — adversário vê botões 1-5
       });
-    }
+    };
+
+    window.cancelBombCode = function() {
+      const overlay = document.getElementById('bomb-code-overlay');
+      if (overlay) overlay.remove();
+    };
 
     // Arma uma mina — agora chamado por tecla separada (G) ou botão de mina
     function placeMineIfHave() {
@@ -1110,9 +1158,9 @@
 
       let found = false;
       Object.entries(bombs).forEach(([bid, b]) => {
-        if (!b.hidden) return;               // apenas minas ocultas
-        if (b.owner === myId) return;        // não desarma a própria
+        if (b.owner === myId) return;           // não desarma a própria
         if (b.state !== 'ticking') return;
+        if (!b.disarmCode) return;              // só bombas com código
 
         // Verifica se está na mesma célula ou adjacente (distância Manhattan <= 1)
         const dr = Math.abs(b.r - me.r);
@@ -1120,31 +1168,109 @@
         if (dr + dc > 1) return;
 
         found = true;
-        if (b.disarmCode && b.disarmCode === guessCode) {
-          // Código correto — remove a mina
+        if (b.disarmCode === guessCode) {
           db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
-          showEventMessage(`✅ MINA DESARMADA com código ${guessCode}! Bom trabalho!`);
-          // Avisa o dono via chat do jogo
+          showEventMessage(`✅ BOMBA DESARMADA! Código ${guessCode} correto!`);
           roomRef.child('chat').push({
             name: '⚠️ SISTEMA',
-            text: `${myName} desarmou uma mina de ${players[b.owner] ? players[b.owner].name : 'alguém'}!`,
-            color: '#00e676',
-            team: null,
+            text: `${myName} desarmou uma bomba de ${players[b.owner]?.name || 'alguém'}!`,
+            color: '#00e676', team: null,
             ts: firebase.database.ServerValue.TIMESTAMP
           });
         } else {
-          // Código errado — EXPLODE imediatamente!
           db.ref(`rooms/${myRoom}/bombs/${bid}`).update({
             plantedAt: getServerTime() - BOMB_FUSE_MS - 100,
             hidden: false
           });
-          showEventMessage(`💥 CÓDIGO ERRADO! A mina EXPLODIU!`);
+          showEventMessage(`💥 CÓDIGO ERRADO! A bomba EXPLODIU!`);
         }
       });
 
-      if (!found) {
-        showEventMessage(`Sem minas inimigas próximas para desarmar.`);
+      if (!found) showEventMessage('Nenhuma bomba inimiga próxima para desarmar.');
+    };
+
+    // Mostra overlay de desarmamento para o adversário quando há bomba com código próxima
+    let disarmOverlayShown = false;
+    function checkShowDisarmOverlay() {
+      const me = players[myId];
+      if (!me || !me.alive || !gameActive) { hideDisarmOverlay(); return; }
+
+      const nearby = Object.entries(bombs).find(([bid, b]) => {
+        if (b.owner === myId || b.state !== 'ticking' || !b.disarmCode) return false;
+        const dr = Math.abs(b.r - me.r);
+        const dc = Math.abs(b.c - me.c);
+        return dr + dc <= 1;
+      });
+
+      if (nearby && !disarmOverlayShown) {
+        disarmOverlayShown = true;
+        showDisarmOverlay(nearby[0], nearby[1]);
+      } else if (!nearby && disarmOverlayShown) {
+        hideDisarmOverlay();
       }
+    }
+
+    function showDisarmOverlay(bid, bomb) {
+      if (document.getElementById('disarm-overlay')) return;
+      const ownerName = players[bomb.owner]?.name || 'Inimigo';
+      const overlay = document.createElement('div');
+      overlay.id = 'disarm-overlay';
+      overlay.style.cssText = `
+        position:fixed;inset:0;background:rgba(0,0,0,0.80);z-index:250;
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        font-family:'Courier New',monospace;color:#fff;gap:16px;
+        animation:flash-bg 0.5s infinite alternate;
+      `;
+      // Barra de tempo sobrando
+      const planted = bomb.plantedAt;
+      const remaining = Math.max(0, BOMB_FUSE_MS - (getServerTime() - planted));
+      const secs = (remaining / 1000).toFixed(1);
+
+      overlay.innerHTML = `
+        <style>@keyframes flash-bg{from{background:rgba(80,0,0,0.80)}to{background:rgba(0,0,0,0.85)}}</style>
+        <div style="font-size:22px;font-weight:bold;color:#ff5252;text-shadow:0 0 10px #f00;">
+          💣 BOMBA DO ${ownerName.toUpperCase()}!
+        </div>
+        <div style="font-size:14px;color:#ffeb3b;text-align:center;max-width:300px;line-height:1.6;">
+          Tente adivinhar o código para <b>desarmar</b>!<br>
+          <span style="color:#ff5252">Código errado = EXPLODE!</span>
+        </div>
+        <div id="disarm-timer" style="font-size:28px;font-weight:bold;color:#ff5252;">⏱ ${secs}s</div>
+        <div style="display:flex;gap:14px;">
+          ${[1,2,3,4,5].map(n=>`
+            <button onclick="tryDisarmAndClose(${n})" style="
+              width:60px;height:60px;border-radius:10px;border:3px solid #ffeb3b;
+              background:#1a1a00;color:#fff;font-size:28px;font-weight:bold;cursor:pointer;
+              font-family:inherit;
+            ">${n}</button>
+          `).join('')}
+        </div>
+        <button onclick="hideDisarmOverlay()" style="
+          background:#333;color:#888;border:1px solid #555;border-radius:6px;
+          padding:6px 18px;cursor:pointer;font-family:inherit;font-size:11px;margin-top:4px;
+        ">Ignorar (arriscado!)</button>
+      `;
+      document.body.appendChild(overlay);
+
+      // Atualiza timer em tempo real
+      const timerEl = document.getElementById('disarm-timer');
+      const iv = setInterval(() => {
+        if (!document.getElementById('disarm-overlay')) { clearInterval(iv); return; }
+        const rem = Math.max(0, BOMB_FUSE_MS - (getServerTime() - planted));
+        if (timerEl) timerEl.textContent = `⏱ ${(rem/1000).toFixed(1)}s`;
+        if (rem <= 0) { clearInterval(iv); hideDisarmOverlay(); }
+      }, 100);
+    }
+
+    window.tryDisarmAndClose = function(code) {
+      hideDisarmOverlay();
+      window.tryDisarmMine(code);
+    };
+
+    window.hideDisarmOverlay = function() {
+      disarmOverlayShown = false;
+      const el = document.getElementById('disarm-overlay');
+      if (el) el.remove();
     };
 
     // Explode todas as minas armadas pelo jogador de uma vez (detonação remota)
@@ -1479,6 +1605,7 @@
       });
 
       updateDisarmUI();
+      checkShowDisarmOverlay();
       requestAnimationFrame(loop);
     }
 
@@ -1513,273 +1640,291 @@
       if (['1','2','3','4','5'].includes(e.key)) tryDisarmMine(parseInt(e.key));
     });
     // ============================================================
-    //  VOICE CHAT — WebRTC mesh com Firebase como sinalização
-    //  Cada par de jogadores cria uma conexão direta (peer-to-peer).
-    //  Firebase guarda offers/answers/ICE candidates em:
-    //    rooms/{room}/voice/{fromId}_{toId}/
+    //  VOICE CHAT — WebRTC full-mesh com Firebase como sinalização
+    //  Cada par cria uma RTCPeerConnection separada.
+    //  Usa STUN Google + TURN público (openrelay) para atravessar NAT/firewall.
+    //  ICE candidates são enfileirados até remoteDescription estar pronto.
     // ============================================================
 
-    const ICE_SERVERS = { iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-    ]};
+    const ICE_SERVERS = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        // TURN público gratuito — necessário para redes corporativas/mobile
+        { urls: 'turn:openrelay.metered.ca:80',      username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443',     username: 'openrelayproject', credential: 'openrelayproject' },
+        { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+      ]
+    };
 
-    let localStream = null;       // stream do microfone local
-    let selfMuted = false;        // se o próprio jogador mutou o mic
-    let voiceReady = false;       // getUserMedia ok?
-    let peerConnections = {};     // { peerId: RTCPeerConnection }
-    let voicePeersRef = null;     // ref Firebase para sinalização de voz
-    let speakingTimers = {};      // timers para detectar quem está falando
+    let localStream   = null;
+    let selfMuted     = false;
+    let voiceReady    = false;
+    let peerConnections = {};   // { peerId: { pc, iceBuf, listenerOff } }
+    let voiceSigRef   = null;   // rooms/{room}/voice
+    let audioCtxs     = {};     // AudioContext por peer para detecção de voz
+    const voiceListened = new Set(); // peers já ouvidos no Firebase
 
-    // Detecta nível de áudio para indicador visual de "falando"
-    function monitorSpeaking(stream, playerId, isLocal) {
+    // --- Detecção de voz (quem está falando) ---
+    function monitorSpeaking(stream, pid) {
       try {
-        const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const src = ctx.createMediaStreamSource(stream);
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 512;
-        src.connect(analyser);
-        const data = new Uint8Array(analyser.fftSize);
-        let speaking = false;
-
-        function check() {
-          analyser.getByteTimeDomainData(data);
-          let sum = 0;
-          for (let i = 0; i < data.length; i++) sum += Math.abs(data[i] - 128);
-          const vol = sum / data.length;
-          const nowSpeaking = vol > 3.5;
-
-          if (nowSpeaking !== speaking) {
-            speaking = nowSpeaking;
-            updateVoicePlayerUI(playerId, { speaking });
-          }
-          requestAnimationFrame(check);
-        }
-        check();
+        if (audioCtxs[pid]) return;
+        const ac = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtxs[pid] = ac;
+        const src = ac.createMediaStreamSource(stream);
+        const an  = ac.createAnalyser();
+        an.fftSize = 256;
+        src.connect(an);
+        const buf = new Uint8Array(an.fftSize);
+        let spk = false;
+        (function tick() {
+          if (!audioCtxs[pid]) return;
+          an.getByteTimeDomainData(buf);
+          let s = 0;
+          for (let i = 0; i < buf.length; i++) s += Math.abs(buf[i] - 128);
+          const now = (s / buf.length) > 4;
+          if (now !== spk) { spk = now; updateVoicePlayerUI(pid, { speaking: spk }); }
+          requestAnimationFrame(tick);
+        })();
       } catch(e) {}
     }
 
-    // Inicia o microfone local
+    // --- Microfone local ---
     async function initVoice() {
       if (voiceReady) return true;
       try {
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
         voiceReady = true;
-        monitorSpeaking(localStream, myId, true);
+        monitorSpeaking(localStream, myId);
         updateVoiceStatus('🎙️ Microfone ativo');
         return true;
       } catch(e) {
-        updateVoiceStatus('⚠️ Microfone negado');
+        updateVoiceStatus('⚠️ Mic negado — clique em Permitir');
+        showEventMessage('⚠️ Permita o microfone para usar o chat de voz');
         return false;
       }
     }
 
-    // Cria (ou retorna) uma RTCPeerConnection para um peer
-    async function getOrCreatePeer(peerId, isInitiator) {
-      if (peerConnections[peerId]) return peerConnections[peerId];
+    // --- Cria PeerConnection para um peer ---
+    function createPC(peerId) {
+      if (peerConnections[peerId]) return peerConnections[peerId].pc;
 
-      const pc = new RTCPeerConnection(ICE_SERVERS);
-      peerConnections[peerId] = pc;
+      const pc    = new RTCPeerConnection(ICE_SERVERS);
+      const iceBuf = [];   // fila de candidates até remoteDescription estar pronto
+      peerConnections[peerId] = { pc, iceBuf };
 
-      // Adiciona tracks do microfone local
-      if (localStream) {
-        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-      }
+      // Adiciona tracks locais
+      if (localStream) localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
 
-      // Ao receber áudio remoto, cria elemento <audio> e toca
+      // Recebe áudio remoto
       pc.ontrack = (e) => {
-        let audio = document.getElementById(`voice-audio-${peerId}`);
+        let audio = document.getElementById(`va-${peerId}`);
         if (!audio) {
           audio = document.createElement('audio');
-          audio.id = `voice-audio-${peerId}`;
+          audio.id = `va-${peerId}`;
           audio.autoplay = true;
           audio.playsInline = true;
           document.body.appendChild(audio);
         }
-        audio.srcObject = e.streams[0];
-        monitorSpeaking(e.streams[0], peerId, false);
+        if (e.streams && e.streams[0]) {
+          audio.srcObject = e.streams[0];
+          // Força play (necessário em mobile)
+          audio.play().catch(()=>{});
+          monitorSpeaking(e.streams[0], peerId);
+        }
         updateVoicePlayerUI(peerId, { connected: true });
+        updateVoiceStatus('🎙️ Conectado');
       };
 
-      // Envia ICE candidates para o Firebase
-      const sigRef = voicePeersRef.child(`${myId}_${peerId}`);
-      const sigRefInv = voicePeersRef.child(`${peerId}_${myId}`);
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          sigRef.child('candidates').push(e.candidate.toJSON());
-        }
+      // Envia ICE candidates para Firebase
+      const outRef = voiceSigRef.child(`${myId}_${peerId}/ice`);
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) outRef.push(candidate.toJSON());
       };
 
+      // Reconecta se cair
       pc.onconnectionstatechange = () => {
-        const state = pc.connectionState;
-        if (state === 'disconnected' || state === 'failed' || state === 'closed') {
-          updateVoicePlayerUI(peerId, { connected: false, speaking: false });
-          const audio = document.getElementById(`voice-audio-${peerId}`);
-          if (audio) { audio.srcObject = null; audio.remove(); }
-          delete peerConnections[peerId];
-          // Tenta reconectar após 2s
-          setTimeout(() => {
-            if (players[peerId] && players[peerId].alive !== undefined) {
-              connectToPeer(peerId);
-            }
-          }, 2000);
+        const s = pc.connectionState;
+        if (s === 'connected') {
+          updateVoiceStatus('🎙️ Conectado');
+          updateVoicePlayerUI(peerId, { speaking: false });
+        }
+        if (s === 'failed' || s === 'disconnected') {
+          closePeer(peerId);
+          setTimeout(() => setupPeerWith(peerId), 3000);
         }
       };
-
-      if (isInitiator) {
-        // Cria offer
-        const offer = await pc.createOffer({ offerToReceiveAudio: true });
-        await pc.setLocalDescription(offer);
-        await sigRef.set({ offer: { type: offer.type, sdp: offer.sdp }, ts: Date.now() });
-
-        // Aguarda answer do outro
-        sigRefInv.child('answer').on('value', async snap => {
-          const ans = snap.val();
-          if (ans && pc.signalingState === 'have-local-offer') {
-            try {
-              await pc.setRemoteDescription(new RTCSessionDescription(ans));
-            } catch(e) {}
-          }
-        });
-
-        // Recebe ICE candidates do outro
-        sigRefInv.child('candidates').on('child_added', async snap => {
-          const c = snap.val();
-          if (c && pc.remoteDescription) {
-            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
-          }
-        });
-      }
 
       return pc;
     }
 
-    // Conecta a um peer específico
-    async function connectToPeer(peerId) {
-      if (!voiceReady || !localStream) return;
+    // Aplica fila de ICE candidates acumulados
+    async function flushIceBuf(peerId) {
+      const entry = peerConnections[peerId];
+      if (!entry) return;
+      const { pc, iceBuf } = entry;
+      while (iceBuf.length > 0) {
+        const c = iceBuf.shift();
+        try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
+      }
+    }
+
+    function closePeer(peerId) {
+      const entry = peerConnections[peerId];
+      if (!entry) return;
+      try { entry.pc.close(); } catch(e) {}
+      if (audioCtxs[peerId]) { try { audioCtxs[peerId].close(); } catch(e) {} delete audioCtxs[peerId]; }
+      const audio = document.getElementById(`va-${peerId}`);
+      if (audio) { audio.srcObject = null; audio.remove(); }
+      delete peerConnections[peerId];
+      updateVoicePlayerUI(peerId, { speaking: false });
+    }
+
+    // --- Sinalização Firebase ---
+    // myId é o iniciador se myId < peerId (lexicográfico), para evitar conexão dupla
+    async function setupPeerWith(peerId) {
+      if (!voiceReady || !localStream || !voiceSigRef) return;
       if (peerId === myId) return;
       if (peerConnections[peerId]) return;
 
-      // Quem tem ID "menor" é o iniciador (evita conexões duplicadas)
-      const isInitiator = myId < peerId;
-      await getOrCreatePeer(peerId, isInitiator);
+      const amInitiator = myId < peerId;
+
+      if (amInitiator) {
+        // Cria offer
+        const pc = createPC(peerId);
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
+        await pc.setLocalDescription(offer);
+        await voiceSigRef.child(`${myId}_${peerId}/offer`).set({ type: offer.type, sdp: offer.sdp });
+
+        // Escuta answer
+        voiceSigRef.child(`${peerId}_${myId}/answer`).on('value', async snap => {
+          const ans = snap.val();
+          if (!ans) return;
+          const entry = peerConnections[peerId];
+          if (!entry) return;
+          if (entry.pc.signalingState !== 'have-local-offer') return;
+          try {
+            await entry.pc.setRemoteDescription(new RTCSessionDescription(ans));
+            await flushIceBuf(peerId);
+          } catch(e) {}
+        });
+
+        // Escuta ICE candidates do peer
+        voiceSigRef.child(`${peerId}_${myId}/ice`).on('child_added', async snap => {
+          const c = snap.val();
+          if (!c) return;
+          const entry = peerConnections[peerId];
+          if (!entry) return;
+          if (entry.pc.remoteDescription) {
+            try { await entry.pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
+          } else {
+            entry.iceBuf.push(c);
+          }
+        });
+
+      } else {
+        // Escuta offer do iniciador
+        if (voiceListened.has(peerId)) return;
+        voiceListened.add(peerId);
+
+        voiceSigRef.child(`${peerId}_${myId}/offer`).on('value', async snap => {
+          const offer = snap.val();
+          if (!offer) return;
+          if (peerConnections[peerId]) return; // já conectado
+
+          const pc = createPC(peerId);
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await voiceSigRef.child(`${myId}_${peerId}/answer`).set({ type: answer.type, sdp: answer.sdp });
+            await flushIceBuf(peerId);
+
+            // Escuta ICE candidates do iniciador
+            voiceSigRef.child(`${peerId}_${myId}/ice`).on('child_added', async cSnap => {
+              const c = cSnap.val();
+              if (!c) return;
+              const entry = peerConnections[peerId];
+              if (!entry) return;
+              if (entry.pc.remoteDescription) {
+                try { await entry.pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
+              } else {
+                entry.iceBuf.push(c);
+              }
+            });
+          } catch(e) {}
+        });
+      }
     }
 
-    // Escuta offers chegando de outros peers
-    function listenForVoiceSignals() {
-      if (!voicePeersRef) return;
-
-      Object.keys(players).forEach(peerId => {
-        if (peerId === myId) return;
-        listenForPeerOffer(peerId);
-      });
-    }
-
-    function listenForPeerOffer(peerId) {
-      if (peerId === myId) return;
-      const sigRef = voicePeersRef.child(`${peerId}_${myId}`); // offer vem do peer para mim
-
-      sigRef.child('offer').on('value', async snap => {
-        const offer = snap.val();
-        if (!offer || peerConnections[peerId]) return;
-        if (!voiceReady || !localStream) return;
-
-        const pc = await getOrCreatePeer(peerId, false);
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(offer));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-
-          // Envia answer para o iniciador
-          voicePeersRef.child(`${myId}_${peerId}/answer`).set({ type: answer.type, sdp: answer.sdp });
-
-          // Recebe ICE candidates do iniciador
-          sigRef.child('candidates').on('child_added', async cSnap => {
-            const c = cSnap.val();
-            if (c && pc.remoteDescription) {
-              try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
-            }
-          });
-        } catch(e) {}
-      });
-    }
-
-    // Inicializa voice chat ao entrar na sala
+    // --- Inicia o sistema de voz ---
     async function startVoiceChat() {
-      voicePeersRef = roomRef.child('voice');
+      voiceSigRef = roomRef.child('voice');
+
+      // Limpa sinalização antiga desta sala para este jogador
+      voiceSigRef.child(myId).remove();
 
       const ok = await initVoice();
-      if (!ok) return;
-
       document.getElementById('voice-bar').style.display = 'block';
       renderVoicePlayers();
 
-      // Conecta a todos que já estão na sala
-      Object.keys(players).forEach(pid => {
-        if (pid !== myId) {
-          connectToPeer(pid);
-          listenForPeerOffer(pid);
-        }
-      });
+      if (!ok) return;
 
-      // Quando novo jogador entra, conecta a ele também
+      // Conecta a jogadores já presentes
+      Object.keys(players).forEach(pid => { if (pid !== myId) setupPeerWith(pid); });
+
+      // Conecta a novos jogadores
       roomRef.child('players').on('child_added', snap => {
-        const peerId = snap.key;
-        if (peerId === myId || peerConnections[peerId]) return;
-        setTimeout(() => {
-          connectToPeer(peerId);
-          listenForPeerOffer(peerId);
-          renderVoicePlayers();
-        }, 800);
+        const pid = snap.key;
+        if (pid === myId) return;
+        setTimeout(() => { setupPeerWith(pid); renderVoicePlayers(); }, 500);
       });
 
-      // Remove conexão quando jogador sai
+      // Desconecta quando jogador sai
       roomRef.child('players').on('child_removed', snap => {
-        const peerId = snap.key;
-        if (peerConnections[peerId]) {
-          peerConnections[peerId].close();
-          delete peerConnections[peerId];
-        }
-        const audio = document.getElementById(`voice-audio-${peerId}`);
-        if (audio) { audio.srcObject = null; audio.remove(); }
+        closePeer(snap.key);
+        voiceListened.delete(snap.key);
         renderVoicePlayers();
       });
 
-      // Limpa sinalização ao sair
+      // Limpa ao sair da página
       window.addEventListener('beforeunload', () => {
-        voicePeersRef.child(myId).remove();
-        Object.values(peerConnections).forEach(pc => pc.close());
+        Object.keys(peerConnections).forEach(closePeer);
+        voiceSigRef.child(myId).remove();
       });
     }
 
-    // Renderiza os avatares de voz
+    // --- UI de voz ---
     function renderVoicePlayers() {
       const container = document.getElementById('voice-players');
       if (!container) return;
-      container.innerHTML = '';
+      // Só recria se mudou o número de jogadores
+      const cur = container.querySelectorAll('.voice-player').length;
+      const total = Object.keys(players).length;
+      if (cur !== total) container.innerHTML = '';
 
       Object.entries(players).forEach(([pid, p]) => {
         if (!p) return;
+        if (document.getElementById(`voice-player-${pid}`)) return; // já existe
         const isMe = pid === myId;
         const div = document.createElement('div');
-        div.className = 'voice-player' + (isMe && selfMuted ? ' muted' : '');
+        div.className = 'voice-player';
         div.id = `voice-player-${pid}`;
         div.style.borderColor = p.color || '#555';
-        div.innerHTML = `<div class="voice-dot" id="voice-dot-${pid}"></div><span style="color:${p.color||'#fff'}">${p.name}${isMe ? ' (você)' : ''}</span>${isMe && selfMuted ? ' 🔇' : ''}`;
+        div.innerHTML = `
+          <div class="voice-dot"></div>
+          <span style="color:${p.color||'#fff'}">${p.name}${isMe ? ' (você)' : ''}</span>
+        `;
         container.appendChild(div);
       });
     }
 
-    function updateVoicePlayerUI(pid, { speaking, connected, muted } = {}) {
+    function updateVoicePlayerUI(pid, { speaking, muted } = {}) {
       const el = document.getElementById(`voice-player-${pid}`);
       if (!el) return;
-      if (speaking !== undefined) {
-        el.classList.toggle('speaking', speaking);
-      }
-      if (muted !== undefined) {
-        el.classList.toggle('muted', muted);
-      }
+      if (speaking !== undefined) el.classList.toggle('speaking', speaking);
+      if (muted     !== undefined) el.classList.toggle('muted', muted);
     }
 
     function updateVoiceStatus(msg) {
@@ -1788,7 +1933,11 @@
     }
 
     window.toggleMuteSelf = function() {
-      if (!localStream) return;
+      if (!localStream) {
+        // Tenta iniciar o microfone se ainda não iniciou
+        initVoice().then(ok => { if (ok) Object.keys(players).forEach(pid => { if (pid !== myId) setupPeerWith(pid); }); });
+        return;
+      }
       selfMuted = !selfMuted;
       localStream.getAudioTracks().forEach(t => { t.enabled = !selfMuted; });
       const btn = document.getElementById('voice-toggle');
