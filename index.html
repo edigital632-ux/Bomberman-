@@ -73,7 +73,19 @@
     .btn-send-bomb { background: #c62828; }
     .btn-send-bomb:active { background: #ef5350; }
 
-    /* Botão Detonar mina */
+    /* Voice Chat */
+    #voice-bar { width: 100%; max-width: 600px; background: #1a1a2e; border: 2px solid #333; border-radius: 8px; padding: 8px 12px; display: none; margin-bottom: 5px; }
+    #voice-bar .voice-title { font-size: 11px; color: #888; margin-bottom: 6px; letter-spacing: 1px; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between; }
+    #voice-players { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .voice-player { display: flex; align-items: center; gap: 5px; background: #222; border-radius: 20px; padding: 4px 10px; font-size: 12px; border: 2px solid #333; transition: border-color 0.15s, background 0.15s; }
+    .voice-player.speaking { border-color: #00e676; background: #0a2a14; }
+    .voice-player.muted { opacity: 0.45; }
+    .voice-dot { width: 8px; height: 8px; border-radius: 50%; background: #555; flex-shrink: 0; transition: background 0.15s; }
+    .voice-player.speaking .voice-dot { background: #00e676; box-shadow: 0 0 6px #00e676; }
+    #voice-toggle { background: #2e7d32; color: #fff; border: none; border-radius: 20px; padding: 4px 12px; font-size: 11px; cursor: pointer; font-family: inherit; font-weight: bold; }
+    #voice-toggle.muted-self { background: #b71c1c; }
+    #voice-toggle:active { opacity: 0.8; }
+    #voice-status { font-size: 11px; color: #ffeb3b; min-height: 14px; }
     #detonate-btn { display: none; width: 90px; height: 90px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #ff6f00, #b71c1c); border: 4px solid #ffeb3b; color: #fff; font-size: 13px; font-weight: bold; cursor: pointer; font-family: inherit; text-align: center; line-height: 1.2; box-shadow: 0 0 18px #ff6f00; animation: pulse-detonate 0.8s infinite alternate; }
     #detonate-btn:active { transform: scale(0.93); }
     @keyframes pulse-detonate { from { box-shadow: 0 0 12px #ff6f00; } to { box-shadow: 0 0 28px #ffeb3b, 0 0 6px #fff; } }
@@ -107,7 +119,20 @@
 
   <div id="team-box"></div>
 
+  <!-- Barra de voz -->
+  <div id="voice-bar">
+    <div class="voice-title">
+      <span>🎙️ VOZ NA SALA</span>
+      <span id="voice-status"></span>
+      <button id="voice-toggle" onclick="toggleMuteSelf()">🎙️ Microfone ON</button>
+    </div>
+    <div id="voice-players"></div>
+  </div>
+
   <div id="room-share"></div>
+  <div id="controls-hint" style="font-size:11px;color:#888;text-align:center;padding:2px 0;">
+    ESPAÇO/BOMBA = bomba normal &nbsp;|&nbsp; G = armar mina 🎯 &nbsp;|&nbsp; F = detonar minas &nbsp;|&nbsp; 1-5 = desarmar mina inimiga
+  </div>
   <div id="phase-banner"></div>
   <div id="event-log"></div>
   <div id="effects-status"></div>
@@ -133,7 +158,9 @@
     </div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:8px;">
       <div class="btn btn-bomb" id="bomb-btn">BOMBA</div>
+      <button id="place-mine-btn" style="display:none;width:85px;height:42px;border-radius:10px;background:#e65100;border:3px solid #ffeb3b;color:#fff;font-size:13px;font-weight:bold;cursor:pointer;font-family:inherit;">🎯 MINA</button>
       <div id="mine-count"></div>
+      <div style="font-size:10px;color:#aaa;text-align:center;max-width:90px;" id="disarm-hint" style="display:none;"></div>
       <div id="team-actions">
         <button class="btn-team-action btn-send-shield" id="send-shield-btn">🛡️ Enviar</button>
         <button class="btn-team-action btn-send-bomb" id="send-bomb-btn">💣 Enviar</button>
@@ -141,6 +168,10 @@
     </div>
     <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
       <button id="detonate-btn">💥<br>DETONAR</button>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;justify-content:center;max-width:120px;" id="disarm-btns" style="display:none;">
+        ${[1,2,3,4,5].map(n=>`<button onclick="tryDisarmMine(${n})" style="width:36px;height:36px;border-radius:6px;border:2px solid #00e676;background:#1b5e20;color:#fff;font-size:16px;font-weight:bold;cursor:pointer;font-family:inherit;">${n}</button>`).join('')}
+      </div>
+      <div id="disarm-label" style="display:none;font-size:10px;color:#00e676;text-align:center;">Desarmar mina (1-5)</div>
     </div>
   </div>
 
@@ -700,6 +731,7 @@
           players = newPlayers;
           updateScoreboard();
           updateTeamActionButtons();
+          renderVoicePlayers();
           
           const count = Object.keys(players).length;
           gameActive = count >= 2;
@@ -738,6 +770,7 @@
         roomRef.child('powerups').on('value', s => { powerups = s.val() || {}; });
 
         initChatListener();
+        startVoiceChat();
 
         document.getElementById('lobby').style.display = 'none';
         document.getElementById('room-share').innerText = `Sala: ${myRoom} — compartilhe o ID`;
@@ -956,13 +989,8 @@
       const me = players[myId];
       if (!gameActive || !me || !me.alive) return;
 
-      // Se tem mina no inventário, arma uma mina em vez de bomba normal
-      if (myMineCount > 0) {
-        placeMine();
-        return;
-      }
-
-      const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking');
+      // Sempre coloca bomba normal, independente de ter minas no inventário
+      const myActiveBombs = Object.values(bombs).filter(b => b.owner === myId && b.state === 'ticking' && !b.hidden);
       const myMaxBombs = me.maxBombs || 1;
       if (myActiveBombs.length >= myMaxBombs) return;
 
@@ -980,9 +1008,20 @@
       });
     }
 
+    // Arma uma mina — agora chamado por tecla separada (G) ou botão de mina
+    function placeMineIfHave() {
+      const me = players[myId];
+      if (!gameActive || !me || !me.alive) return;
+      if (myMineCount <= 0) { showEventMessage('Sem minas no inventário! Pegue o power-up 🎯'); return; }
+      placeMine();
+    }
+
+    // Código secreto escolhido ao armar cada mina (1-5)
+    // { bid: code }
+    let mineCodes = {};
+
     // Arma uma mina invisível na posição atual do jogador.
-    // A mina é registrada no Firebase com flag `hidden:true` — o cliente dos adversários
-    // ignora bombas hidden que não são deles, portanto eles não a enxergam.
+    // Pede código secreto 1-5 para desarmamento pelo adversário.
     function placeMine() {
       const me = players[myId];
       if (!me || !me.alive || myMineCount <= 0) return;
@@ -993,23 +1032,120 @@
       const alreadyMineHere = Object.values(myArmedMines).some(m => m.r === r && m.c === c);
       if (alreadyMineHere) { showEventMessage('Já tem uma mina neste local!'); return; }
 
+      // Pede código secreto de desarmamento
+      showMineCodePicker(r, c);
+    }
+
+    function showMineCodePicker(r, c) {
+      // Cria overlay de escolha de código
+      const overlay = document.createElement('div');
+      overlay.id = 'mine-code-overlay';
+      overlay.style.cssText = `
+        position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 200;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        font-family: 'Courier New', monospace; color: #fff; gap: 16px;
+      `;
+      overlay.innerHTML = `
+        <div style="font-size:18px;font-weight:bold;color:#ff8f00;">🎯 ARMAR MINA</div>
+        <div style="font-size:14px;color:#ffeb3b;text-align:center;max-width:280px;">
+          Escolha o código secreto de desarmamento (1-5).<br>
+          O adversário precisa apertar o número certo para desarmar!
+        </div>
+        <div style="display:flex;gap:12px;">
+          ${[1,2,3,4,5].map(n => `
+            <button onclick="confirmMineCode(${n},${r},${c})" style="
+              width:52px;height:52px;border-radius:8px;border:3px solid #ff8f00;
+              background:#222;color:#fff;font-size:22px;font-weight:bold;cursor:pointer;
+              font-family:inherit;
+            ">${n}</button>
+          `).join('')}
+        </div>
+        <button onclick="cancelMineCode()" style="
+          background:#555;color:#fff;border:1px solid #888;border-radius:6px;
+          padding:8px 20px;cursor:pointer;font-family:inherit;font-size:13px;
+        ">Cancelar</button>
+      `;
+      document.body.appendChild(overlay);
+    }
+
+    window.confirmMineCode = function(code, r, c) {
+      const overlay = document.getElementById('mine-code-overlay');
+      if (overlay) overlay.remove();
+
+      const me = players[myId];
+      if (!me || !me.alive || myMineCount <= 0) return;
+
       const bid = `mine_${myId}_${Date.now()}`;
       myMineCount -= 1;
 
       // Arma a bomba no Firebase com hidden:true e sem plantedAt (não explode sozinha)
+      // disarmCode é público (no Firebase) - o adversário compara localmente
       db.ref(`rooms/${myRoom}/bombs/${bid}`).set({
         r, c, owner: myId,
         range: me.bombRange || BASE_BOMB_RANGE,
         plantedAt: 0,          // zero = não conta temporizador automático
         state: 'ticking',
-        hidden: true            // flag: adversários não renderizam
+        hidden: true,           // flag: adversários não renderizam
+        disarmCode: code        // código de desarmamento (1-5)
       });
 
       // Registra localmente
       myArmedMines[bid] = { r, c, range: me.bombRange || BASE_BOMB_RANGE, bid };
+      mineCodes[bid] = code;
       updateMineUI();
-      showEventMessage('🎯 Mina armada! Aguarde e pressione DETONAR!');
-    }
+      showEventMessage(`🎯 Mina armada com código ${code}! Detone quando quiser!`);
+    };
+
+    window.cancelMineCode = function() {
+      const overlay = document.getElementById('mine-code-overlay');
+      if (overlay) overlay.remove();
+    };
+
+    // Tenta desarmar minas do adversário na mesma célula ou adjacente (raio 1)
+    // Exposto globalmente para os botões inline do HTML
+    // O adversário pressiona tecla 1-5 e compara com disarmCode de cada mina próxima
+    window.tryDisarmMine = function tryDisarmMine(guessCode) {
+      const me = players[myId];
+      if (!me || !me.alive || !gameActive) return;
+
+      let found = false;
+      Object.entries(bombs).forEach(([bid, b]) => {
+        if (!b.hidden) return;               // apenas minas ocultas
+        if (b.owner === myId) return;        // não desarma a própria
+        if (b.state !== 'ticking') return;
+
+        // Verifica se está na mesma célula ou adjacente (distância Manhattan <= 1)
+        const dr = Math.abs(b.r - me.r);
+        const dc = Math.abs(b.c - me.c);
+        if (dr + dc > 1) return;
+
+        found = true;
+        if (b.disarmCode && b.disarmCode === guessCode) {
+          // Código correto — remove a mina
+          db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
+          showEventMessage(`✅ MINA DESARMADA com código ${guessCode}! Bom trabalho!`);
+          // Avisa o dono via chat do jogo
+          roomRef.child('chat').push({
+            name: '⚠️ SISTEMA',
+            text: `${myName} desarmou uma mina de ${players[b.owner] ? players[b.owner].name : 'alguém'}!`,
+            color: '#00e676',
+            team: null,
+            ts: firebase.database.ServerValue.TIMESTAMP
+          });
+        } else {
+          // Código errado — EXPLODE imediatamente!
+          db.ref(`rooms/${myRoom}/bombs/${bid}`).update({
+            plantedAt: getServerTime() - BOMB_FUSE_MS - 100,
+            hidden: false
+          });
+          showEventMessage(`💥 CÓDIGO ERRADO! A mina EXPLODIU!`);
+        }
+      });
+
+      if (!found) {
+        showEventMessage(`Sem minas inimigas próximas para desarmar.`);
+      }
+    };
 
     // Explode todas as minas armadas pelo jogador de uma vez (detonação remota)
     function detonateMines() {
@@ -1033,17 +1169,46 @@
       showEventMessage('💥 DETONADO!');
     }
 
-    // Atualiza o botão detonar e o contador de minas
+    // Atualiza o botão detonar, contador de minas e botões de desarmar
     function updateMineUI() {
       const detonateBtn = document.getElementById('detonate-btn');
       const mineCountEl = document.getElementById('mine-count');
+      const placeMineBtn = document.getElementById('place-mine-btn');
       const hasArmed = Object.keys(myArmedMines).length > 0;
       detonateBtn.style.display = hasArmed ? 'block' : 'none';
       if (myMineCount > 0) {
         mineCountEl.textContent = `🎯 Minas: ${myMineCount}`;
+        if (placeMineBtn) placeMineBtn.style.display = 'block';
       } else {
         mineCountEl.textContent = '';
+        if (placeMineBtn) placeMineBtn.style.display = 'none';
       }
+
+      // Mostra botões de desarmar se há mina inimiga próxima
+      updateDisarmUI();
+    }
+
+    function updateDisarmUI() {
+      const me = players[myId];
+      const disarmBtns = document.getElementById('disarm-btns');
+      const disarmLabel = document.getElementById('disarm-label');
+      if (!disarmBtns || !disarmLabel) return;
+
+      if (!me || !me.alive || !gameActive) {
+        disarmBtns.style.display = 'none';
+        disarmLabel.style.display = 'none';
+        return;
+      }
+
+      const hasNearbyEnemyMine = Object.values(bombs).some(b => {
+        if (!b.hidden || b.owner === myId || b.state !== 'ticking') return false;
+        const dr = Math.abs(b.r - me.r);
+        const dc = Math.abs(b.c - me.c);
+        return dr + dc <= 1;
+      });
+
+      disarmBtns.style.display = hasNearbyEnemyMine ? 'flex' : 'none';
+      disarmLabel.style.display = hasNearbyEnemyMine ? 'block' : 'none';
     }
 
     function tickBombs() {
@@ -1313,6 +1478,7 @@
         ctx.restore();
       });
 
+      updateDisarmUI();
       requestAnimationFrame(loop);
     }
 
@@ -1330,6 +1496,7 @@
     bind('send-shield-btn', sendShieldToTeammate);
     bind('send-bomb-btn', sendBombToTeammate);
     bind('detonate-btn', detonateMines);
+    bind('place-mine-btn', placeMineIfHave);
 
     document.addEventListener('keydown', e => {
       if (document.activeElement && document.activeElement.id === 'chat-input') return;
@@ -1339,9 +1506,300 @@
       if (e.key === 'ArrowRight') move(0, 1);
       if (e.key === ' ') placeBomb();
       if (e.key === 'f' || e.key === 'F') detonateMines();
+      if (e.key === 'g' || e.key === 'G') placeMineIfHave();
       if (e.key === 'q' || e.key === 'Q') sendShieldToTeammate();
       if (e.key === 'e' || e.key === 'E') sendBombToTeammate();
+      // Teclas 1-5: tenta desarmar mina inimiga próxima
+      if (['1','2','3','4','5'].includes(e.key)) tryDisarmMine(parseInt(e.key));
     });
+    // ============================================================
+    //  VOICE CHAT — WebRTC mesh com Firebase como sinalização
+    //  Cada par de jogadores cria uma conexão direta (peer-to-peer).
+    //  Firebase guarda offers/answers/ICE candidates em:
+    //    rooms/{room}/voice/{fromId}_{toId}/
+    // ============================================================
+
+    const ICE_SERVERS = { iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]};
+
+    let localStream = null;       // stream do microfone local
+    let selfMuted = false;        // se o próprio jogador mutou o mic
+    let voiceReady = false;       // getUserMedia ok?
+    let peerConnections = {};     // { peerId: RTCPeerConnection }
+    let voicePeersRef = null;     // ref Firebase para sinalização de voz
+    let speakingTimers = {};      // timers para detectar quem está falando
+
+    // Detecta nível de áudio para indicador visual de "falando"
+    function monitorSpeaking(stream, playerId, isLocal) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 512;
+        src.connect(analyser);
+        const data = new Uint8Array(analyser.fftSize);
+        let speaking = false;
+
+        function check() {
+          analyser.getByteTimeDomainData(data);
+          let sum = 0;
+          for (let i = 0; i < data.length; i++) sum += Math.abs(data[i] - 128);
+          const vol = sum / data.length;
+          const nowSpeaking = vol > 3.5;
+
+          if (nowSpeaking !== speaking) {
+            speaking = nowSpeaking;
+            updateVoicePlayerUI(playerId, { speaking });
+          }
+          requestAnimationFrame(check);
+        }
+        check();
+      } catch(e) {}
+    }
+
+    // Inicia o microfone local
+    async function initVoice() {
+      if (voiceReady) return true;
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        voiceReady = true;
+        monitorSpeaking(localStream, myId, true);
+        updateVoiceStatus('🎙️ Microfone ativo');
+        return true;
+      } catch(e) {
+        updateVoiceStatus('⚠️ Microfone negado');
+        return false;
+      }
+    }
+
+    // Cria (ou retorna) uma RTCPeerConnection para um peer
+    async function getOrCreatePeer(peerId, isInitiator) {
+      if (peerConnections[peerId]) return peerConnections[peerId];
+
+      const pc = new RTCPeerConnection(ICE_SERVERS);
+      peerConnections[peerId] = pc;
+
+      // Adiciona tracks do microfone local
+      if (localStream) {
+        localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      }
+
+      // Ao receber áudio remoto, cria elemento <audio> e toca
+      pc.ontrack = (e) => {
+        let audio = document.getElementById(`voice-audio-${peerId}`);
+        if (!audio) {
+          audio = document.createElement('audio');
+          audio.id = `voice-audio-${peerId}`;
+          audio.autoplay = true;
+          audio.playsInline = true;
+          document.body.appendChild(audio);
+        }
+        audio.srcObject = e.streams[0];
+        monitorSpeaking(e.streams[0], peerId, false);
+        updateVoicePlayerUI(peerId, { connected: true });
+      };
+
+      // Envia ICE candidates para o Firebase
+      const sigRef = voicePeersRef.child(`${myId}_${peerId}`);
+      const sigRefInv = voicePeersRef.child(`${peerId}_${myId}`);
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          sigRef.child('candidates').push(e.candidate.toJSON());
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+          updateVoicePlayerUI(peerId, { connected: false, speaking: false });
+          const audio = document.getElementById(`voice-audio-${peerId}`);
+          if (audio) { audio.srcObject = null; audio.remove(); }
+          delete peerConnections[peerId];
+          // Tenta reconectar após 2s
+          setTimeout(() => {
+            if (players[peerId] && players[peerId].alive !== undefined) {
+              connectToPeer(peerId);
+            }
+          }, 2000);
+        }
+      };
+
+      if (isInitiator) {
+        // Cria offer
+        const offer = await pc.createOffer({ offerToReceiveAudio: true });
+        await pc.setLocalDescription(offer);
+        await sigRef.set({ offer: { type: offer.type, sdp: offer.sdp }, ts: Date.now() });
+
+        // Aguarda answer do outro
+        sigRefInv.child('answer').on('value', async snap => {
+          const ans = snap.val();
+          if (ans && pc.signalingState === 'have-local-offer') {
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(ans));
+            } catch(e) {}
+          }
+        });
+
+        // Recebe ICE candidates do outro
+        sigRefInv.child('candidates').on('child_added', async snap => {
+          const c = snap.val();
+          if (c && pc.remoteDescription) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
+          }
+        });
+      }
+
+      return pc;
+    }
+
+    // Conecta a um peer específico
+    async function connectToPeer(peerId) {
+      if (!voiceReady || !localStream) return;
+      if (peerId === myId) return;
+      if (peerConnections[peerId]) return;
+
+      // Quem tem ID "menor" é o iniciador (evita conexões duplicadas)
+      const isInitiator = myId < peerId;
+      await getOrCreatePeer(peerId, isInitiator);
+    }
+
+    // Escuta offers chegando de outros peers
+    function listenForVoiceSignals() {
+      if (!voicePeersRef) return;
+
+      Object.keys(players).forEach(peerId => {
+        if (peerId === myId) return;
+        listenForPeerOffer(peerId);
+      });
+    }
+
+    function listenForPeerOffer(peerId) {
+      if (peerId === myId) return;
+      const sigRef = voicePeersRef.child(`${peerId}_${myId}`); // offer vem do peer para mim
+
+      sigRef.child('offer').on('value', async snap => {
+        const offer = snap.val();
+        if (!offer || peerConnections[peerId]) return;
+        if (!voiceReady || !localStream) return;
+
+        const pc = await getOrCreatePeer(peerId, false);
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+
+          // Envia answer para o iniciador
+          voicePeersRef.child(`${myId}_${peerId}/answer`).set({ type: answer.type, sdp: answer.sdp });
+
+          // Recebe ICE candidates do iniciador
+          sigRef.child('candidates').on('child_added', async cSnap => {
+            const c = cSnap.val();
+            if (c && pc.remoteDescription) {
+              try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch(e) {}
+            }
+          });
+        } catch(e) {}
+      });
+    }
+
+    // Inicializa voice chat ao entrar na sala
+    async function startVoiceChat() {
+      voicePeersRef = roomRef.child('voice');
+
+      const ok = await initVoice();
+      if (!ok) return;
+
+      document.getElementById('voice-bar').style.display = 'block';
+      renderVoicePlayers();
+
+      // Conecta a todos que já estão na sala
+      Object.keys(players).forEach(pid => {
+        if (pid !== myId) {
+          connectToPeer(pid);
+          listenForPeerOffer(pid);
+        }
+      });
+
+      // Quando novo jogador entra, conecta a ele também
+      roomRef.child('players').on('child_added', snap => {
+        const peerId = snap.key;
+        if (peerId === myId || peerConnections[peerId]) return;
+        setTimeout(() => {
+          connectToPeer(peerId);
+          listenForPeerOffer(peerId);
+          renderVoicePlayers();
+        }, 800);
+      });
+
+      // Remove conexão quando jogador sai
+      roomRef.child('players').on('child_removed', snap => {
+        const peerId = snap.key;
+        if (peerConnections[peerId]) {
+          peerConnections[peerId].close();
+          delete peerConnections[peerId];
+        }
+        const audio = document.getElementById(`voice-audio-${peerId}`);
+        if (audio) { audio.srcObject = null; audio.remove(); }
+        renderVoicePlayers();
+      });
+
+      // Limpa sinalização ao sair
+      window.addEventListener('beforeunload', () => {
+        voicePeersRef.child(myId).remove();
+        Object.values(peerConnections).forEach(pc => pc.close());
+      });
+    }
+
+    // Renderiza os avatares de voz
+    function renderVoicePlayers() {
+      const container = document.getElementById('voice-players');
+      if (!container) return;
+      container.innerHTML = '';
+
+      Object.entries(players).forEach(([pid, p]) => {
+        if (!p) return;
+        const isMe = pid === myId;
+        const div = document.createElement('div');
+        div.className = 'voice-player' + (isMe && selfMuted ? ' muted' : '');
+        div.id = `voice-player-${pid}`;
+        div.style.borderColor = p.color || '#555';
+        div.innerHTML = `<div class="voice-dot" id="voice-dot-${pid}"></div><span style="color:${p.color||'#fff'}">${p.name}${isMe ? ' (você)' : ''}</span>${isMe && selfMuted ? ' 🔇' : ''}`;
+        container.appendChild(div);
+      });
+    }
+
+    function updateVoicePlayerUI(pid, { speaking, connected, muted } = {}) {
+      const el = document.getElementById(`voice-player-${pid}`);
+      if (!el) return;
+      if (speaking !== undefined) {
+        el.classList.toggle('speaking', speaking);
+      }
+      if (muted !== undefined) {
+        el.classList.toggle('muted', muted);
+      }
+    }
+
+    function updateVoiceStatus(msg) {
+      const el = document.getElementById('voice-status');
+      if (el) el.textContent = msg;
+    }
+
+    window.toggleMuteSelf = function() {
+      if (!localStream) return;
+      selfMuted = !selfMuted;
+      localStream.getAudioTracks().forEach(t => { t.enabled = !selfMuted; });
+      const btn = document.getElementById('voice-toggle');
+      if (btn) {
+        btn.textContent = selfMuted ? '🔇 Mutado' : '🎙️ Microfone ON';
+        btn.classList.toggle('muted-self', selfMuted);
+      }
+      updateVoicePlayerUI(myId, { muted: selfMuted });
+      updateVoiceStatus(selfMuted ? '🔇 Você está mutado' : '🎙️ Microfone ativo');
+    };
+
   </script>
 </body>
 </html>
