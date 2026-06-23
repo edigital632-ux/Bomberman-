@@ -1002,49 +1002,8 @@
       const { r, c } = me;
       if (isBombAt(r, c)) return;
 
-      // Pede código secreto antes de plantar
-      showBombCodePicker(r, c);
-    }
-
-    function showBombCodePicker(r, c) {
-      if (document.getElementById('bomb-code-overlay')) return;
-      const overlay = document.createElement('div');
-      overlay.id = 'bomb-code-overlay';
-      overlay.style.cssText = `
-        position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:300;
-        display:flex;flex-direction:column;align-items:center;justify-content:center;
-        font-family:'Courier New',monospace;color:#fff;gap:18px;
-      `;
-      overlay.innerHTML = `
-        <div style="font-size:20px;font-weight:bold;color:#ff5252;">💣 ESCOLHA O CÓDIGO DA BOMBA</div>
-        <div style="font-size:13px;color:#ffeb3b;text-align:center;max-width:300px;line-height:1.6;">
-          O adversário vai ver os botões <b>1 a 5</b> para tentar desarmar.<br>
-          Se ele <b>acertar</b> o código → bomba desarmada.<br>
-          Se ele <b>errar</b> → <span style="color:#ff5252">EXPLODE na hora!</span>
-        </div>
-        <div style="display:flex;gap:14px;">
-          ${[1,2,3,4,5].map(n=>`
-            <button onclick="confirmBombCode(${n},${r},${c})" style="
-              width:58px;height:58px;border-radius:10px;border:3px solid #ff5252;
-              background:#1a0000;color:#fff;font-size:26px;font-weight:bold;cursor:pointer;
-              font-family:inherit;transition:background 0.15s;
-            " onmouseover="this.style.background='#4a0000'" onmouseout="this.style.background='#1a0000'">${n}</button>
-          `).join('')}
-        </div>
-        <button onclick="cancelBombCode()" style="
-          background:#333;color:#aaa;border:1px solid #666;border-radius:6px;
-          padding:8px 22px;cursor:pointer;font-family:inherit;font-size:12px;
-        ">Cancelar</button>
-      `;
-      document.body.appendChild(overlay);
-    }
-
-    window.confirmBombCode = function(code, r, c) {
-      const overlay = document.getElementById('bomb-code-overlay');
-      if (overlay) overlay.remove();
-      const me = players[myId];
-      if (!me || !me.alive) return;
-
+      // Bomba normal: planta direto, sem código e sem tela de desarme.
+      // Conta o tempo e explode destruindo blocos, como no Bomberman clássico.
       const bid = `b_${myId}_${Date.now()}`;
       throwAnimations[myId] = { startTime: Date.now(), targetR: r, targetC: c };
 
@@ -1052,15 +1011,10 @@
         r, c, owner: myId,
         range: me.bombRange || BASE_BOMB_RANGE,
         plantedAt: firebase.database.ServerValue.TIMESTAMP,
-        state: 'ticking',
-        disarmCode: code   // código secreto — adversário vê botões 1-5
+        state: 'ticking'
+        // sem disarmCode: bomba normal nunca pede desarme
       });
-    };
-
-    window.cancelBombCode = function() {
-      const overlay = document.getElementById('bomb-code-overlay');
-      if (overlay) overlay.remove();
-    };
+    }
 
     // Arma uma mina — agora chamado por tecla separada (G) ou botão de mina
     function placeMineIfHave() {
@@ -1164,6 +1118,7 @@
 
       let found = false;
       Object.entries(bombs).forEach(([bid, b]) => {
+        if (!b.hidden) return;                  // só minas escondidas podem ser desarmadas
         if (b.owner === myId) return;           // não desarma a própria
         if (b.state !== 'ticking') return;
         if (!b.disarmCode) return;              // só bombas com código
@@ -1176,10 +1131,10 @@
         found = true;
         if (b.disarmCode === guessCode) {
           db.ref(`rooms/${myRoom}/bombs/${bid}`).remove();
-          showEventMessage(`✅ BOMBA DESARMADA! Código ${guessCode} correto!`);
+          showEventMessage(`✅ MINA DESARMADA! Código ${guessCode} correto!`);
           roomRef.child('chat').push({
             name: '⚠️ SISTEMA',
-            text: `${myName} desarmou uma bomba de ${players[b.owner]?.name || 'alguém'}!`,
+            text: `${myName} desarmou uma mina de ${players[b.owner]?.name || 'alguém'}!`,
             color: '#00e676', team: null,
             ts: firebase.database.ServerValue.TIMESTAMP
           });
@@ -1188,11 +1143,11 @@
             plantedAt: getServerTime() - BOMB_FUSE_MS - 100,
             hidden: false
           });
-          showEventMessage(`💥 CÓDIGO ERRADO! A bomba EXPLODIU!`);
+          showEventMessage(`💥 CÓDIGO ERRADO! A MINA EXPLODIU!`);
         }
       });
 
-      if (!found) showEventMessage('Nenhuma bomba inimiga próxima para desarmar.');
+      if (!found) showEventMessage('Nenhuma mina inimiga próxima para desarmar.');
     };
 
     // Mostra overlay de desarmamento para o adversário quando há bomba com código próxima
@@ -1205,7 +1160,8 @@
       if (disarmOverlayActiveBid) return; // já tem overlay aberto
 
       const nearby = Object.entries(bombs).find(([bid, b]) => {
-        if (b.owner === myId || b.state !== 'ticking' || !b.disarmCode) return false;
+        // Só dispara para minas escondidas do item (hidden). Bomba normal nunca tem isso.
+        if (!b.hidden || b.owner === myId || b.state !== 'ticking' || !b.disarmCode) return false;
         const dr = Math.abs(b.r - newR);
         const dc = Math.abs(b.c - newC);
         return dr + dc === 0; // só na mesma célula
@@ -1236,7 +1192,7 @@
       overlay.innerHTML = `
         <style>@keyframes flash-bg{from{background:rgba(80,0,0,0.80)}to{background:rgba(0,0,0,0.85)}}</style>
         <div style="font-size:22px;font-weight:bold;color:#ff5252;text-shadow:0 0 10px #f00;">
-          💣 BOMBA DO ${ownerName.toUpperCase()}!
+          🎯 MINA DO ${ownerName.toUpperCase()}!
         </div>
         <div style="font-size:14px;color:#ffeb3b;text-align:center;max-width:300px;line-height:1.6;">
           Tente adivinhar o código para <b>desarmar</b>!<br>
