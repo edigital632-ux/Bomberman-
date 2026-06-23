@@ -52,10 +52,10 @@
     .team-B { background: #c62828; color: #fff; }
 
     /* Chat */
-    #chat-box { width: 100%; max-width: 600px; background: #181818; border: 2px solid #555; border-radius: 5px; margin-bottom: 5px; display: flex; flex-direction: column; }
-    #chat-log { height: 70px; overflow-y: auto; font-size: 12px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; }
-    #chat-log div { word-break: break-word; }
-    #chat-input-row { display: flex; border-top: 1px solid #444; }
+    #chat-box { width: 100%; max-width: 600px; background: transparent; border: none; margin-bottom: 5px; display: flex; flex-direction: column; }
+    #chat-log { height: 90px; overflow: hidden; font-size: 12px; padding: 4px 8px; display: flex; flex-direction: column-reverse; gap: 3px; pointer-events: none; }
+    #chat-log div { word-break: break-word; background: rgba(0,0,0,0.55); padding: 3px 8px; border-radius: 4px; display: inline-block; max-width: 100%; transition: opacity 0.6s ease; }
+    #chat-input-row { display: flex; border-top: 1px solid #444; background: #181818; border-radius: 5px; border: 2px solid #555; }
     #chat-input { flex: 1; border: none; border-radius: 0; background: #222; color: #fff; padding: 8px; font-size: 13px; margin: 0; width: auto; }
     #chat-send { background: #2e7d32; color: #fff; border: none; padding: 8px 14px; cursor: pointer; font-family: inherit; font-size: 13px; }
     #chat-send:active { background: #43a047; }
@@ -175,6 +175,47 @@
       { r: rows - 2, c: 1 }         
     ];
     const COLORS = ['#2196f3', '#ff9800', '#9c27b0', '#4caf50']; 
+
+    // ---------- SPRITES PIXEL ART ORIGINAIS (criados do zero, sem copiar nenhuma arte existente) ----------
+    // Personagem com capacete colorido por slot, e tiles de cenário (parede de pedra / bloco de moita).
+    const SPRITE_DATA = {
+      p1_white_blue: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABcklEQVR4nO1WTUoDMRT+KmYpb5BxU4SidCOCx5huXHgOb+AJvIHncOFmeoyCuCkVQdw4yAQPMC40Jc3kJS9pi5v5YJgheXnf936SDDBgwD9jlLOIiDpuTmud5DPJ2BAv3z5Ym+lknCTkYJfk9nwoSzZEKomoixH7MJ2Mo5mIZkAaSe56UQlyopeuCwrITb0rIpQFcRPuC4OAQ27CrZs5YFJg9w8Rdb4tyQpw0b7UAICTq2sAwOfiaWPeN94I/HoFnD18b7X3XRzfv/++ge719mgjC72UcOSrm+dk4vPHS++4LUJcguJilizARB6CWIDEWQ5629Ct0a4R7QEbRNRxkX/dnfbGQrbcrSgugQ9t266/i6LI8hE8CbXWI1+kNql5OISiB2Q/JBUR1TlN+Ec+AzDnbER3gVLKW/MYuVIqaifuAVtEKBvGRkIuEVC5ImwSHxjiCkwZYgLmrgibpGma9fFYlmUd8eOFqAkFNjFs14T7xA/t7X4d6cKAqwAAAABJRU5ErkJggg==",
+      p2_red_black: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABb0lEQVR4nO1WvU7DMBC+IjxfhjBk61oJ6AswdUiFxMrOxjPxHkgonXmBAlLXbh7IEI+dzEKiq+Ozz6YVSz4pUmSf7/vuxz8AEyb8M2Y5ixDRcnPGmCSflznEVVWFzGyKkIsTkw/zoSxRiFQioo0R+6C1jmYimgFpJLnrRSXIiV66LiggN/WuiFAWxE14LkwC2IPIrZvWOtk57R9EtL4tKT4Ju10DAABXtw8AAPD98Xo07xtfrJ6ifr0CPpfLIfrHw0GqkcX7fN7/2pvt9igLo5RQcorrt5dk4q/7Z+84FSEuQbFYJwsgkbMQC5A4y8FoG7o1OjWiPUCBiJaL/G6/H42FbLlbMelB4qLruuG/KIosH8GT0Bgz80VKSfuPQyh6ANmDpEbEJqcJf8nXALDhbER3gVLKW/MYuVIqaifuASoilI3eRkIuEVC7IiiJDwxxDUwZYgI2rghK0rbtcDyWZdlE/HghakKBTQx/a8Jz4genVnLL75jYqwAAAABJRU5ErkJggg==",
+      p3_purple_yellow: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABf0lEQVR4nO1WMU7EMBCcQ7jeFEHKDxAND7gKmruGgh9QwA94BBU/ACF+QHFNruEqHkCD+MFJRCKuU4QCfDjJ2l6bO9FkpJMie70zO7txDhgx4p8xSTlERK1rT2sdlTMq2BDXLyfOmGy6ihKyt01ye9/nkg2RSiJqQ8Qcsukq6ETQAWklqedFLUipXnrOKyDV+r4InwviIdwVRgH7ro1+38wFEwN7foio5V5Jp4BBsrcSAHBwfAYA+HhddPbZ9c+bYF5WwN3hk1X9g1SjE7fF4/dDgfbq/bzjwsCSLvkvLp+LaOL70zW7bosQtyA7mkcL2FTugViAJFkKBq9hv0fbRnAGbBBR66r8en0xWPPFur6K4hZwqOt685xlWVIO702otZ5wldqk5ueCr3pA9odkRkRlyhD+kM8BLF0xom+BUorteYhcKRWME8+ALcLnhomRkAPhFswAIM/z0l5smsYr1EZVVeYGY9sQcmBpRHAkVvKBSCYPC9EQCmJC+NsQ7hJfSQ2BMKrM/eIAAAAASUVORK5CYII=",
+      p4_green_white: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABZElEQVR4nO2WPU7DQBCFXxBbjwtzCBpaKgqapAkS3IBjcASOwQ1AIo3TUFDR0nAIXHhrF6Zh0STe2ZndOKLxJ0WKdmd33vx4bGBm5p9ZlBwiokHa895n3ZllHBx3XSfaVFWVJeRkSud8P5WlbIhoKMEiQs3AoZFo500l0NI+9bk/SlOfUwpzEx6LWcCptLFftzBgcuBNSERDbDiJAkaXfTUAgLOLNQDg+3Ozsy+ta0QFrJ9vp5tiAK6ersPfYXP3spOFUUok56+XD9mObz4eo+tchLkE1fkqWwCLXMQswHJZCaPHcL9GU6P2AIeIBiny9/u30VrKVvo+MJcgBn/OS+YEoExC7/0iFil3Gn4SqegB2yfZkoiakib8db4CsJVsTO8C51y05ppz55xqZ+4BLiKVjWBjcQ7oJVgCQF3XDV/s+z4plNO2bZhg0TJoGdgGETEn7PKRyMg9UUxNaLDROKwJj8kP20bx/Ff51ZkAAAAASUVORK5CYII=",
+      wall: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAlklEQVR4nO2Xuw2AMAxED+Q5PARkBiQa9mEClgOG8CJQ0AQUPgoCN3ddolh+in35FE3bLXCUVHWAqvYeyc1sKD0Sx5J4YGbDccE8jajqkJ3gLt59BwjgDiDzNEJVAWwNk9LZ/FNdxe9ckNPtb13iXgICEMAdYGfDXL+/OSck9nDKz7wNCUCAr8X3gHsJCEAAAdJ/wr+0AgZVOj9xHN3wAAAAAElFTkSuQmCC",
+      block: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABmElEQVR4nMWXMW7DMAxFmaIHSLRkT4EOPoEHLz1H154gB/EJuvYcXTLkBBoKtLsX2TdIl0qhGFKk1KImYDiGFP9nkqKoDQBcYEW7W1McAOA+/ujHgZ2w3e9gmebqFwcfwHVOHD8fTzkAFZWeSzDBB/FZgrkJARW3jlNx63gGoInXzrNYdRIu08yGoRTvPwPQklGD4MKQADS3LtMM5+PpuThJgeDGEkDp67D4byFEAM36cXjDd84scM0AVvF4p14w1QEuDNYqyHnIdS5dkt14gApyySm5uuQhM0CEkNZ7TTI2AwBc1yyFkJKxFWgDP/1APw5sobAsKSxuDUPcDZMHpM0i+KB+XWmJbve77KKmLsOPV2+KORYvzaUQKsDjS6cWIGyWJMUQpkIUISQxbDgclm27uScsfWlNPTAD0CTV9gZr01LlgeBDBsKJBx+qOqbUlLrOqX0dFin97+v9Ew5PD3UA8WVYhD5rMNGs4gCFELT2eBbD5f3fT0Z0b2EPJpxZc8R1LhPRTlZVHtDCwo1rDU3aDdey1U/H35bf2Tr3H9cuAAAAAElFTkSuQmCC",
+    };
+
+    // Carrega as imagens dos sprites em memória (decodifica o base64 uma única vez)
+    const SPRITE_IMAGES = {};
+    let spritesLoadedCount = 0;
+    const SPRITE_KEYS = Object.keys(SPRITE_DATA);
+    SPRITE_KEYS.forEach(key => {
+      const img = new Image();
+      img.onload = () => { spritesLoadedCount++; };
+      img.src = SPRITE_DATA[key];
+      SPRITE_IMAGES[key] = img;
+    });
+    const PLAYER_SPRITE_BY_SLOT = ['p1_white_blue', 'p2_red_black', 'p3_purple_yellow', 'p4_green_white'];
+
+    // Canvas auxiliar (offscreen) usado para tingir a parede com a cor da fase atual,
+    // preservando a textura de pedra do sprite e a variação de cor por fase pedida anteriormente.
+    const tintCanvas = document.createElement('canvas');
+    tintCanvas.width = 32; tintCanvas.height = 32;
+    const tintCtx = tintCanvas.getContext('2d');
+    function getTintedWallTile(color) {
+      tintCtx.clearRect(0, 0, 32, 32);
+      tintCtx.drawImage(SPRITE_IMAGES.wall, 0, 0, 32, 32);
+      tintCtx.globalCompositeOperation = 'multiply';
+      tintCtx.fillStyle = color;
+      tintCtx.fillRect(0, 0, 32, 32);
+      tintCtx.globalCompositeOperation = 'destination-in';
+      tintCtx.drawImage(SPRITE_IMAGES.wall, 0, 0, 32, 32);
+      tintCtx.globalCompositeOperation = 'source-over';
+      return tintCanvas;
+    }
+
     
     // Paletas de cores das fases — o bloco destrutível ('S') é SEMPRE preto e nunca muda.
     // Só variam o fundo e a parede indestrutível ('W'), sempre bem distintas entre si,
@@ -301,6 +342,12 @@
     }
 
     // ---------- CHAT (visível para a sala toda, colorido por time/jogador) ----------
+    // Mensagens aparecem como num chat de jogo normal: ficam visíveis por um tempo e depois somem (fade out),
+    // em vez de se acumularem fixas na tela.
+    const CHAT_MESSAGE_LIFETIME_MS = 6000;
+    const CHAT_FADE_MS = 600;
+    const CHAT_MAX_VISIBLE = 5;
+
     function initChatListener() {
       if (chatInitialized) return;
       chatInitialized = true;
@@ -314,7 +361,17 @@
         const teamLabel = msg.team ? ` [Time ${msg.team}]` : '';
         line.textContent = `${msg.name}${teamLabel}: ${msg.text}`;
         chatLog.appendChild(line);
-        chatLog.scrollTop = chatLog.scrollHeight;
+
+        // Mantém só as últimas CHAT_MAX_VISIBLE mensagens na tela
+        while (chatLog.children.length > CHAT_MAX_VISIBLE) {
+          chatLog.removeChild(chatLog.firstChild);
+        }
+
+        // Depois de um tempo, a mensagem some com fade e é removida
+        setTimeout(() => {
+          line.style.opacity = '0';
+          setTimeout(() => { if (line.parentNode) line.parentNode.removeChild(line); }, CHAT_FADE_MS);
+        }, CHAT_MESSAGE_LIFETIME_MS);
       });
     }
 
@@ -719,12 +776,21 @@
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           if (map[r] && map[r][c] === 'W') { 
-              ctx.fillStyle = visual.wall; 
-              ctx.fillRect(c * grid, r * grid, grid, grid); 
+              if (spritesLoadedCount >= SPRITE_KEYS.length) {
+                const tinted = getTintedWallTile(visual.wall);
+                ctx.drawImage(tinted, c * grid, r * grid, grid, grid);
+              } else {
+                ctx.fillStyle = visual.wall; 
+                ctx.fillRect(c * grid, r * grid, grid, grid); 
+              }
           }
           else if (map[r] && map[r][c] === 'S') { 
-              ctx.fillStyle = BLOCK_COLOR; 
-              ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); 
+              if (spritesLoadedCount >= SPRITE_KEYS.length) {
+                ctx.drawImage(SPRITE_IMAGES.block, c * grid + 2, r * grid + 2, grid - 4, grid - 4);
+              } else {
+                ctx.fillStyle = BLOCK_COLOR; 
+                ctx.fillRect(c * grid + 2, r * grid + 2, grid - 4, grid - 4); 
+              }
           }
         }
       }
@@ -801,10 +867,18 @@
           ctx.stroke();
         }
 
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.35, 0, Math.PI * 2);
-        ctx.fill();
+        const spriteKey = PLAYER_SPRITE_BY_SLOT[p.slot] || PLAYER_SPRITE_BY_SLOT[0];
+        const sprite = SPRITE_IMAGES[spriteKey];
+        if (sprite && spritesLoadedCount >= SPRITE_KEYS.length) {
+          ctx.drawImage(sprite, p.c * grid + 4, p.r * grid + 2, grid - 8, grid - 8);
+        } else {
+          // Fallback enquanto o sprite carrega: círculo de cor sólida (comportamento antigo)
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc((p.c + 0.5) * grid, (p.r + 0.5) * grid, grid * 0.35, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
         ctx.fillStyle = '#fff';
         ctx.fillText(p.name, p.c * grid + 10, p.r * grid);
         ctx.restore();
