@@ -12,8 +12,8 @@
     * { box-sizing: border-box; touch-action: manipulation; user-select: none; }
     body { margin: 0; background: #1a1a1a; color: white; font-family: 'Courier New', monospace; display: flex; flex-direction: column; align-items: center; }
     #lobby { position: fixed; inset: 0; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; text-align: center; padding: 20px; overflow-y: auto; }
-    #canvas-container { position: relative; width: 100%; max-width: 600px; aspect-ratio: 15/13; }
-    canvas { width: 100%; height: auto; background: #2e7d32; border: 4px solid #fff; image-rendering: pixelated; display: block; transition: background 1s ease; }
+    #canvas-container { position: relative; width: 100%; max-width: 600px; aspect-ratio: 15/13; padding: 10px; background: linear-gradient(160deg, #3a3a3a, #161616); border-radius: 10px; box-shadow: 0 0 0 2px #555, 0 8px 24px rgba(0,0,0,0.6), inset 0 0 18px rgba(0,0,0,0.5); }
+    canvas { width: 100%; height: auto; background: #2e7d32; border: 3px solid #000; border-radius: 4px; image-rendering: pixelated; display: block; transition: background 1s ease; box-shadow: 0 0 0 3px #ffca28, 0 0 16px rgba(0,0,0,0.7) inset; }
     .controls { width: 100%; max-width: 600px; padding: 20px; display: flex; justify-content: space-between; align-items: center; }
     .dpad { display: grid; grid-template-columns: repeat(3, 60px); gap: 5px; }
     .btn { width: 60px; height: 60px; background: #444; border: 2px solid #fff; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 24px; color: white; cursor: pointer; }
@@ -415,9 +415,62 @@
     const tintCanvas = document.createElement('canvas');
     tintCanvas.width = 32; tintCanvas.height = 32;
     const tintCtx = tintCanvas.getContext('2d');
+
+    // CACHE de performance: pattern de piso quadriculado, gerado 1x por fase (não por frame).
+    // Dá "cara de jogo" (xadrez sutil tipo grama/gelo/lava) em vez de cor lisa chapada.
+    let _floorPatternCache = null;
+    let _floorPatternCacheKey = null;
+    function getFloorPattern(ctx, bgColor) {
+      if (_floorPatternCacheKey === bgColor && _floorPatternCache) return _floorPatternCache;
+
+      const tile = document.createElement('canvas');
+      tile.width = grid * 2; tile.height = grid * 2;
+      const tctx = tile.getContext('2d');
+
+      // Cor base
+      tctx.fillStyle = bgColor;
+      tctx.fillRect(0, 0, grid * 2, grid * 2);
+
+      // Quadrado alternado um pouco mais claro/escuro (efeito xadrez sutil, tipo grama de jogo retrô)
+      const lighter = shadeColor(bgColor, 10);
+      tctx.fillStyle = lighter;
+      tctx.fillRect(0, 0, grid, grid);
+      tctx.fillRect(grid, grid, grid, grid);
+
+      // Textura de "ruído" leve em pontos aleatórios fixos (sementes determinísticas)
+      tctx.fillStyle = shadeColor(bgColor, -12);
+      const speckles = [[6,8],[20,14],[40,5],[12,28],[34,34],[50,20],[18,44],[44,50],[8,50],[54,8]];
+      speckles.forEach(([sx, sy]) => tctx.fillRect(sx % (grid*2), sy % (grid*2), 2, 2));
+
+      _floorPatternCache = ctx.createPattern(tile, 'repeat');
+      _floorPatternCacheKey = bgColor;
+      return _floorPatternCache;
+    }
+
+    // Clareia (amount > 0) ou escurece (amount < 0) uma cor hex
+    function shadeColor(hex, amount) {
+      const num = parseInt(hex.replace('#', ''), 16);
+      let r = (num >> 16) + amount;
+      let g = ((num >> 8) & 0x00FF) + amount;
+      let b = (num & 0x0000FF) + amount;
+      r = Math.max(0, Math.min(255, r));
+      g = Math.max(0, Math.min(255, g));
+      b = Math.max(0, Math.min(255, b));
+      return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
+    }
+
+    // CACHE de performance: o tile da parede só precisa ser re-tingido quando a FASE muda,
+    // não a cada frame (60x/seg). Antes recalculava sempre — causava o lag.
+    let _wallTileCache = null;
+    let _wallTileCacheColor = null;
     function getTintedWallTile(color) {
       const wallImg = SPRITE_IMAGES.wall;
       if (!wallImg || !wallImg.complete) return null;
+
+      if (_wallTileCacheColor === color && _wallTileCache) {
+        return _wallTileCache; // cor não mudou desde o último frame: reusa o cache
+      }
+
       tintCtx.clearRect(0, 0, 32, 32);
       tintCtx.drawImage(wallImg, 0, 0, 32, 32);
       tintCtx.globalCompositeOperation = 'multiply';
@@ -426,7 +479,17 @@
       tintCtx.globalCompositeOperation = 'destination-in';
       tintCtx.drawImage(wallImg, 0, 0, 32, 32);
       tintCtx.globalCompositeOperation = 'source-over';
-      return tintCanvas;
+
+      // Salva um snapshot (ImageBitmap-like) no cache via canvas dedicado
+      if (!_wallTileCache) {
+        _wallTileCache = document.createElement('canvas');
+        _wallTileCache.width = 32; _wallTileCache.height = 32;
+      }
+      const cacheCtx = _wallTileCache.getContext('2d');
+      cacheCtx.clearRect(0, 0, 32, 32);
+      cacheCtx.drawImage(tintCanvas, 0, 0);
+      _wallTileCacheColor = color;
+      return _wallTileCache;
     }
 
     
@@ -486,9 +549,15 @@
       }).join('');
     });
 
+    let _lastScoreboardSig = null;
     function updateScoreboard() {
       const pArr = Object.values(players).sort((a, b) => a.slot - b.slot);
-      
+
+      // Assinatura só com os dados que afetam o placar (ignora r/c, que mudam a cada passo)
+      const sig = pArr.map(p => `${p.slot}|${p.name}|${p.points || 0}|${p.color}|${p.team || ''}`).join(';');
+      if (sig === _lastScoreboardSig) return; // nada relevante mudou: não toca o DOM
+      _lastScoreboardSig = sig;
+
       for(let i = 0; i < 4; i++) {
         const el = document.getElementById(`score-p${i+1}`);
         if(!el) continue;
@@ -510,17 +579,28 @@
 
     // ---------- DUPLAS / TIMES ----------
     // Só libera a formação de dupla quando a sala está com os 4 jogadores.
+    let _lastTeamBoxSig = null;
     function updateTeamBox() {
       const box = document.getElementById('team-box');
       const ids = Object.keys(players);
       if (ids.length < 4) {
         box.style.display = 'none';
+        _lastTeamBoxSig = null;
         return;
       }
-      box.style.display = 'flex';
 
       const me = players[myId];
       if (!me) { box.style.display = 'none'; return; }
+
+      // Assinatura só com nome/time de cada jogador (ignora posição)
+      const sig = ids.map(pid => `${pid}:${players[pid].name}:${players[pid].team || ''}`).sort().join(';') + `|me:${myId}`;
+      if (sig === _lastTeamBoxSig) {
+        box.style.display = 'flex';
+        return; // nada relevante mudou: não reconstrói os botões
+      }
+      _lastTeamBoxSig = sig;
+
+      box.style.display = 'flex';
 
       if (me.team) {
         const teammateId = ids.find(pid => pid !== myId && players[pid].team === me.team);
@@ -780,6 +860,7 @@
           requestAnimationFrame(loop);
           setInterval(tickBombs, 50); 
           setInterval(updateEffectsStatus, 200);
+          setInterval(updateDisarmUI, 150);
         }
       } catch (err) {
         lobbyError.innerText = 'Erro ao conectar.';
@@ -1277,27 +1358,30 @@
       updateDisarmUI();
     }
 
+    let _lastDisarmUIState = null; // cache pra só tocar o DOM quando o estado realmente muda
     function updateDisarmUI() {
       const me = players[myId];
       const disarmBtns = document.getElementById('disarm-btns');
       const disarmLabel = document.getElementById('disarm-label');
       if (!disarmBtns || !disarmLabel) return;
 
+      let show;
       if (!me || !me.alive || !gameActive) {
-        disarmBtns.style.display = 'none';
-        disarmLabel.style.display = 'none';
-        return;
+        show = false;
+      } else {
+        show = Object.values(bombs).some(b => {
+          if (!b.hidden || b.owner === myId || b.state !== 'ticking') return false;
+          const dr = Math.abs(b.r - me.r);
+          const dc = Math.abs(b.c - me.c);
+          return dr + dc <= 1;
+        });
       }
 
-      const hasNearbyEnemyMine = Object.values(bombs).some(b => {
-        if (!b.hidden || b.owner === myId || b.state !== 'ticking') return false;
-        const dr = Math.abs(b.r - me.r);
-        const dc = Math.abs(b.c - me.c);
-        return dr + dc <= 1;
-      });
+      if (show === _lastDisarmUIState) return; // nada mudou: não toca o DOM
+      _lastDisarmUIState = show;
 
-      disarmBtns.style.display = hasNearbyEnemyMine ? 'flex' : 'none';
-      disarmLabel.style.display = hasNearbyEnemyMine ? 'block' : 'none';
+      disarmBtns.style.display = show ? 'flex' : 'none';
+      disarmLabel.style.display = show ? 'block' : 'none';
     }
 
     function tickBombs() {
@@ -1402,11 +1486,18 @@
       // APLICAÇÃO DINÂMICA DA PALETA DE CORES DA FASE
       // O bloco destrutível ('S') usa sempre BLOCK_COLOR (preto fixo); só fundo/parede mudam por fase.
       const visual = PHASE_VISUALS[(currentPhase - 1) % PHASE_VISUALS.length];
-      canvas.style.backgroundColor = visual.bg;
+
+      // Piso com textura quadriculada (cacheada por fase) em vez de cor lisa — dá "cara de jogo"
+      ctx.fillStyle = getFloorPattern(ctx, visual.bg);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           if (map[r] && map[r][c] === 'W') {
+              // Sombra de profundidade abaixo da parede
+              ctx.fillStyle = 'rgba(0,0,0,0.25)';
+              ctx.fillRect(c * grid + 2, r * grid + grid - 4, grid - 4, 5);
+
               const tinted = getTintedWallTile(visual.wall);
               if (tinted) {
                 ctx.drawImage(tinted, c * grid, r * grid, grid, grid);
@@ -1414,8 +1505,15 @@
                 ctx.fillStyle = visual.wall;
                 ctx.fillRect(c * grid, r * grid, grid, grid);
               }
+              // Brilho superior sutil (efeito de bevel / relevo 3D leve)
+              ctx.fillStyle = 'rgba(255,255,255,0.10)';
+              ctx.fillRect(c * grid + 1, r * grid + 1, grid - 2, 3);
           }
           else if (map[r] && map[r][c] === 'S') {
+              // Sombra de profundidade abaixo do bloco destrutível
+              ctx.fillStyle = 'rgba(0,0,0,0.3)';
+              ctx.fillRect(c * grid + 4, r * grid + grid - 4, grid - 8, 5);
+
               const blockImg = SPRITE_IMAGES.block;
               if (blockImg && blockImg.complete) {
                 ctx.drawImage(blockImg, c * grid + 2, r * grid + 2, grid - 4, grid - 4);
@@ -1498,7 +1596,26 @@
         } else if (b.state === 'ticking') {
             const elapsed = b.plantedAt ? serverNow - b.plantedAt : 0;
             const pulsing = elapsed > (BOMB_FUSE_MS - 800);
-            ctx.fillStyle = pulsing ? '#ff5252' : '#000';
+
+            // Sombra no chão embaixo da bomba
+            ctx.fillStyle = 'rgba(0,0,0,0.30)';
+            ctx.beginPath();
+            ctx.ellipse((b.c + 0.5) * grid, (b.r + 0.72) * grid, grid * 0.34, grid * 0.10, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Corpo da bomba com leve brilho (gradiente) em vez de cor chapada
+            const bombGrad = ctx.createRadialGradient(
+              (b.c + 0.38) * grid, (b.r + 0.38) * grid, grid * 0.05,
+              (b.c + 0.5) * grid, (b.r + 0.5) * grid, grid * 0.42
+            );
+            if (pulsing) {
+              bombGrad.addColorStop(0, '#ff8a80');
+              bombGrad.addColorStop(1, '#b71c1c');
+            } else {
+              bombGrad.addColorStop(0, '#444');
+              bombGrad.addColorStop(1, '#000');
+            }
+            ctx.fillStyle = bombGrad;
             ctx.beginPath();
             ctx.arc((b.c + 0.5) * grid, (b.r + 0.5) * grid, grid * 0.4, 0, Math.PI * 2);
             ctx.fill();
@@ -1549,6 +1666,12 @@
         ctx.save();
         if (invisActive && isMe) ctx.globalAlpha = 0.45;
 
+        // Sombra elíptica no chão embaixo do personagem (dá profundidade/cara de jogo)
+        ctx.fillStyle = 'rgba(0,0,0,0.30)';
+        ctx.beginPath();
+        ctx.ellipse((p.c + 0.5) * grid, (p.r + 0.86) * grid, grid * 0.32, grid * 0.10, 0, 0, Math.PI * 2);
+        ctx.fill();
+
         if (shielded) {
           ctx.strokeStyle = '#00e5ff';
           ctx.lineWidth = 4;
@@ -1570,7 +1693,6 @@
         ctx.restore();
       });
 
-      updateDisarmUI();
       requestAnimationFrame(loop);
     }
 
